@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useNavigation } from '@react-navigation/native';
@@ -13,38 +13,54 @@ import apiService from '../services/api';
 // Screens
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
+import EmailVerificationScreen from '../screens/EmailVerificationScreen';
 import MapScreen from '../screens/MapScreen';
 import ChatScreen from '../screens/ChatScreen';
 import PhotoScreen from '../screens/PhotoScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import SecurityScreen from '../screens/SecurityScreen';
+import ConfessionScreen from '../screens/ConfessionScreen';
+import NotificationCenterScreen from '../screens/NotificationCenterScreen';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
 
 // Ana Tab Navigator - Alt navigasyon menüsü
-function MainTabNavigator({ onLogout }) {
+function MainTabNavigator({ onLogout, navigation }) {
   const { height: screenHeight } = Dimensions.get('window');
   const bottomSafeArea = getBottomSafeArea();
   const [isMenuVisible, setIsMenuVisible] = useState(false);
-  const navigation = useNavigation();
+  const tabNavigatorRef = useRef(null);
   
   const handleMenuNavigate = (screenName) => {
     // GlobalMenu'den gelen navigation isteğini işle
-    if (screenName === 'Profile') {
-      navigation.navigate('Profile');
-    } else if (screenName === 'Map') {
-      navigation.navigate('Map');
-    } else if (screenName === 'Chat') {
-      navigation.navigate('Chat');
-    } else if (screenName === 'Photo') {
-      navigation.navigate('Photo');
+    console.log('Navigating to:', screenName);
+    
+    if (screenName === 'Confession') {
+      // Confession screen için Stack Navigator'a navigate et
+      const stackNavigation = navigation.getParent();
+      if (stackNavigation) {
+        stackNavigation.navigate(screenName);
+      }
+    } else {
+      // Tab Navigator içindeki ekranlara doğrudan navigasyon yap
+      if (tabNavigatorRef.current) {
+        tabNavigatorRef.current.navigate(screenName);
+      }
     }
   };
   
   return (
     <>
     <Tab.Navigator
+      ref={tabNavigatorRef}
+      listeners={{
+        state: (e) => {
+          // Tab Navigator'ın state değişikliklerini dinle
+          console.log('Tab Navigator state changed:', e.data.state);
+        }
+      }}
       screenOptions={({ route }) => ({
         tabBarIcon: ({ focused, color, size }) => {
           let iconName;
@@ -129,10 +145,10 @@ function MainTabNavigator({ onLogout }) {
       />
       <Tab.Screen 
         name="Profile" 
+        component={ProfileScreen}
         options={{ title: 'Profil' }}
-      >
-        {(props) => <ProfileScreen {...props} onLogout={onLogout} navigation={props.navigation} />}
-      </Tab.Screen>
+        initialParams={{ onLogout }}
+      />
     </Tab.Navigator>
     
     <GlobalMenu 
@@ -163,7 +179,7 @@ export default function AppNavigator() {
         // Token'ı API servisine set et
         apiService.setToken(token);
         
-        // Token'ı doğrula
+        // Token'ı doğrula - profil endpoint'ini kullan
         const response = await apiService.verifyToken();
         
         if (response.success) {
@@ -178,6 +194,12 @@ export default function AppNavigator() {
       }
     } catch (error) {
       console.error('Auth check error:', error);
+      
+      // Token geçersizse kullanıcıyı bilgilendir
+      if (error.message.includes('Token geçersiz') || error.message.includes('Geçersiz token')) {
+        console.log('Token geçersiz, kullanıcı login sayfasına yönlendiriliyor');
+      }
+      
       // Hata durumunda token'ı temizle ve login'e yönlendir
       apiService.clearToken();
       setIsAuthenticated(false);
@@ -200,10 +222,19 @@ export default function AppNavigator() {
       {isAuthenticated ? (
         <>
           <Stack.Screen name="Main">
-            {(props) => <MainTabNavigator {...props} onLogout={() => setIsAuthenticated(false)} />}
+            {(props) => <MainTabNavigator {...props} navigation={props.navigation} onLogout={() => setIsAuthenticated(false)} />}
+          </Stack.Screen>
+          <Stack.Screen name="Confession">
+            {(props) => <ConfessionScreen {...props} />}
           </Stack.Screen>
           <Stack.Screen name="Settings">
             {(props) => <SettingsScreen {...props} />}
+          </Stack.Screen>
+          <Stack.Screen name="Security">
+            {(props) => <SecurityScreen {...props} />}
+          </Stack.Screen>
+          <Stack.Screen name="NotificationCenter">
+            {(props) => <NotificationCenterScreen {...props} />}
           </Stack.Screen>
         </>
       ) : (
@@ -213,6 +244,9 @@ export default function AppNavigator() {
           </Stack.Screen>
           <Stack.Screen name="Register">
             {(props) => <RegisterScreen {...props} onAuthentication={handleAuthentication} />}
+          </Stack.Screen>
+          <Stack.Screen name="EmailVerification">
+            {(props) => <EmailVerificationScreen {...props} />}
           </Stack.Screen>
         </>
       )}

@@ -9,7 +9,7 @@ const getApiBaseUrl = () => {
     // Bu IP'yi kendi bilgisayarınızın IP adresi ile değiştirin
     // Windows: ipconfig komutu ile IP adresinizi bulabilirsiniz
     // Mac/Linux: ifconfig komutu ile IP adresinizi bulabilirsiniz
-    return 'http://192.168.1.2:3000/api'; // Bilgisayarınızın IP adresi
+    return 'http://192.168.1.2:3001/api'; // Bilgisayarınızın IP adresi
   }
   // Production için
   return 'https://your-production-api.com/api';
@@ -122,17 +122,38 @@ class ApiService {
   }
 
   // POST isteği
-  async post(endpoint, data) {
-    return this.request(endpoint, {
+  async post(endpoint, data, options = {}) {
+    const config = {
       method: 'POST',
-      body: JSON.stringify(data),
-    });
+      ...options,
+    };
+
+    // FormData ise JSON.stringify yapma
+    if (data instanceof FormData) {
+      config.body = data;
+      // FormData için Content-Type'ı kaldır, browser otomatik ayarlar
+      if (config.headers) {
+        delete config.headers['Content-Type'];
+      }
+    } else {
+      config.body = JSON.stringify(data);
+    }
+
+    return this.request(endpoint, config);
   }
 
   // PUT isteği
   async put(endpoint, data) {
     return this.request(endpoint, {
       method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  // PATCH isteği
+  async patch(endpoint, data) {
+    return this.request(endpoint, {
+      method: 'PATCH',
       body: JSON.stringify(data),
     });
   }
@@ -166,7 +187,17 @@ class ApiService {
   }
 
   async verifyToken() {
-    return this.get('/auth/verify');
+    try {
+      return await this.get('/auth/verify');
+    } catch (error) {
+      // Token geçersizse otomatik olarak temizle
+      if (error.message.includes('Geçersiz token') || error.message.includes('invalid signature')) {
+        console.log('Token geçersiz, temizleniyor...');
+        await this.removeStoredToken();
+        throw new Error('Token geçersiz, lütfen yeniden giriş yapın');
+      }
+      throw error;
+    }
   }
 
   async logout() {
@@ -264,6 +295,185 @@ class ApiService {
       throw error;
     }
   }
+
+  // Kullanıcı istatistiklerini getir
+  async getUserStats() {
+    return this.get('/users/stats');
+  }
+
+  // Arkadaş listesini getir
+  async getFriends() {
+    return this.get('/users/friends');
+  }
+
+  // Kullanıcı ara
+  async searchUsers(query) {
+    return this.get(`/users/search?q=${encodeURIComponent(query)}`);
+  }
+
+  // Arkadaş ekle
+  async addFriend(friendId) {
+    return this.post('/users/friends', { friend_id: friendId });
+  }
+
+  // Arkadaş çıkar
+  async removeFriend(friendId) {
+    return this.delete(`/users/friends/${friendId}`);
+  }
+
+  // Şifre değiştir
+  async changePassword(currentPassword, newPassword) {
+    return this.post('/security/change-password', {
+      currentPassword,
+      newPassword
+    });
+  }
+
+  async sendEmailVerification() {
+    return this.post('/security/send-email-verification');
+  }
+
+  async verifyEmailCode(code) {
+    return this.post('/security/verify-email-code', { code });
+  }
+
+  async toggle2FA(enabled) {
+    return this.post('/security/toggle-2fa', { enabled });
+  }
+
+  async getActiveSessions() {
+    return this.get('/security/active-sessions');
+  }
+
+  async endAllSessions() {
+    return this.post('/security/end-all-sessions');
+  }
+
+  async getSecurityHistory() {
+    return this.get('/security/history');
+  }
+
+  async updateSecuritySettings(settings) {
+    return this.put('/security/settings', settings);
+  }
+
+  // Kayıt sırasında 2FA doğrulama kodu gönder
+  async sendRegistration2FA(email, firstName, lastName) {
+    return this.post('/security/send-registration-2fa', { email, firstName, lastName });
+  }
+
+  // Kayıt sırasında 2FA doğrulama kodunu doğrula
+  async verifyRegistration2FA(email, code) {
+    return this.post('/security/verify-registration-2fa', { email, code });
+  }
+
+  // Konum API'leri
+  async updateUserLocation(locationData) {
+    return this.post('/location', locationData);
+  }
+
+  async getNearbyUsers(radius = 1000, limit = 50) {
+    return this.get(`/location/nearby?radius=${radius}&limit=${limit}`);
+  }
+
+  async getUserLocationHistory(days = 7) {
+    return this.get(`/location/history?days=${days}`);
+  }
+
+  async shareLocationWithFriends(friendIds, locationData) {
+    return this.post('/location/share', {
+      friend_ids: friendIds,
+      location: locationData
+    });
+  }
+
+  async stopLocationSharing() {
+    return this.post('/location/stop');
+  }
+
+  async getLocationSettings() {
+    return this.get('/location/settings');
+  }
+
+  async updateLocationSettings(settings) {
+    return this.put('/location/settings', settings);
+  }
+
+  // Notification API'leri
+  async getNotifications(page = 1, limit = 20, unreadOnly = false) {
+    return this.get(`/notifications?page=${page}&limit=${limit}&unreadOnly=${unreadOnly}`);
+  }
+
+  async markNotificationAsRead(notificationId) {
+    return this.patch(`/notifications/${notificationId}/read`);
+  }
+
+  async markAllNotificationsAsRead() {
+    return this.patch('/notifications/mark-all-read');
+  }
+
+  async deleteNotification(notificationId) {
+    return this.delete(`/notifications/${notificationId}`);
+  }
+
+  async deleteReadNotifications() {
+    return this.delete('/notifications/cleanup/read');
+  }
+
+  async getNotificationStats() {
+    return this.get('/notifications/stats');
+  }
+
+  // Friendship API'leri
+  async getFriends() {
+    return this.get('/friendships');
+  }
+
+  async getFriendRequests() {
+    return this.get('/friendships/requests');
+  }
+
+  async sendFriendRequest(friendId) {
+    return this.post('/friendships', { friendId });
+  }
+
+  async acceptFriendRequest(friendId) {
+    return this.post('/friendships/accept', { friendId });
+  }
+
+  async declineFriendRequest(friendId) {
+    return this.post('/friendships/decline', { friendId });
+  }
+
+  async removeFriend(friendId) {
+    return this.delete(`/friendships/${friendId}`);
+  }
+
+  async blockUser(friendId) {
+    return this.post('/friendships/block', { friendId });
+  }
+
+  async unblockUser(friendId) {
+    return this.delete(`/friendships/unblock/${friendId}`);
+  }
+
+  async getFriendsStats() {
+    return this.get('/friendships/stats');
+  }
+
+  // Advanced Profile API'leri
+  async getProfileOptions() {
+    return this.get('/users/profile-options');
+  }
+
+  async updateAdvancedProfile(profileData) {
+    return this.put('/users/advanced-profile', profileData);
+  }
+
+  async getNearbyUsers(latitude, longitude, radius = 5000, limit = 50) {
+    return this.get(`/users/nearby?latitude=${latitude}&longitude=${longitude}&radius=${radius}&limit=${limit}`);
+  }
+
 }
 
 // Singleton instance

@@ -16,9 +16,13 @@ const authenticateToken = async (req, res, next) => {
 
     // Token'ı doğrula
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log('Decoded token:', decoded);
     
     // Kullanıcıyı veritabanından kontrol et
-    const user = await User.findById(decoded.userId);
+    const userId = decoded.userId || decoded.id;
+    console.log('Looking for user with ID:', userId);
+    const user = await User.findById(userId);
+    console.log('Found user:', user ? 'Yes' : 'No');
     
     if (!user) {
       return res.status(401).json({
@@ -39,7 +43,18 @@ const authenticateToken = async (req, res, next) => {
       id: user.id,
       email: user.email,
       first_name: user.first_name,
-      last_name: user.last_name
+      last_name: user.last_name,
+      birth_date: user.birth_date,
+      gender: user.gender,
+      profile_picture: user.profile_picture,
+      bio: user.bio,
+      location_latitude: user.location_latitude,
+      location_longitude: user.location_longitude,
+      location_name: user.location_name,
+      age_range_min: user.age_range_min,
+      age_range_max: user.age_range_max,
+      interests: user.interests,
+      settings: user.settings
     };
 
     next();
@@ -86,7 +101,18 @@ const optionalAuth = async (req, res, next) => {
         id: user.id,
         email: user.email,
         first_name: user.first_name,
-        last_name: user.last_name
+        last_name: user.last_name,
+        birth_date: user.birth_date,
+        gender: user.gender,
+        profile_picture: user.profile_picture,
+        bio: user.bio,
+        location_latitude: user.location_latitude,
+        location_longitude: user.location_longitude,
+        location_name: user.location_name,
+        age_range_min: user.age_range_min,
+        age_range_max: user.age_range_max,
+        interests: user.interests,
+        settings: user.settings
       };
     } else {
       req.user = null;

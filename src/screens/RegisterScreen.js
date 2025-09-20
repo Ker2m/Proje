@@ -26,6 +26,9 @@ export default function RegisterScreen({ navigation, onAuthentication }) {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [step, setStep] = useState(1); // 1: Form, 2: 2FA Verification
+  const [verificationCode, setVerificationCode] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
 
   const handleInputChange = (field, value) => {
     setFormData(prev => ({
@@ -52,13 +55,22 @@ export default function RegisterScreen({ navigation, onAuthentication }) {
       return;
     }
 
+    // Şifre güçlülük kontrolü - Özel karakter zorunlu
+    const strongPasswordRegex = /^(?=.*[@$!%*?&.]).{6,}$/;
+    if (!strongPasswordRegex.test(password)) {
+      Alert.alert(
+        'Zayıf Şifre', 
+        'Şifre en az 6 karakter olmalı ve en az 1 özel karakter içermelidir (@$!%*?&.)'
+      );
+      return;
+    }
+
     // Email formatını kontrol et
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       Alert.alert('Hata', 'Geçerli bir email adresi giriniz');
       return;
     }
-
 
     setIsLoading(true);
 
@@ -68,14 +80,64 @@ export default function RegisterScreen({ navigation, onAuthentication }) {
       const first_name = nameParts[0];
       const last_name = nameParts.slice(1).join(' ') || '';
 
+      // 2FA doğrulama kodu gönder
+      const response = await apiService.sendRegistration2FA(email, first_name, last_name);
+      
+      if (response.success) {
+        // 2FA doğrulama adımına geç
+        setStep(2);
+        Alert.alert('Doğrulama Kodu Gönderildi', 'Email adresinize 2FA doğrulama kodu gönderildi. Lütfen kodu girin.');
+      } else {
+        Alert.alert('Hata', response.message || '2FA doğrulama kodu gönderilemedi');
+      }
+    } catch (error) {
+      console.error('Register error:', error);
+      Alert.alert('Hata', error.message || 'Kayıt yapılırken bir hata oluştu');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handle2FAVerification = async () => {
+    if (!verificationCode || verificationCode.length !== 6) {
+      Alert.alert('Hata', 'Geçerli bir 6 haneli kod girin');
+      return;
+    }
+
+    setIsVerifying(true);
+
+    try {
+      // 2FA doğrulama kodunu doğrula
+      const response = await apiService.verifyRegistration2FA(formData.email, verificationCode);
+      
+      if (response.success) {
+        // Doğrulama başarılı, kayıt işlemini tamamla
+        await completeRegistration();
+      } else {
+        Alert.alert('Hata', response.message || 'Doğrulama kodu hatalı');
+      }
+    } catch (error) {
+      console.error('2FA verification error:', error);
+      Alert.alert('Hata', error.message || 'Doğrulama kodu doğrulanırken bir hata oluştu');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const completeRegistration = async () => {
+    try {
+      // Ad ve soyadı ayır
+      const nameParts = formData.name.trim().split(' ');
+      const first_name = nameParts[0];
+      const last_name = nameParts.slice(1).join(' ') || '';
+
       const userData = {
         first_name,
         last_name,
-        email,
-        password,
+        email: formData.email,
+        password: formData.password,
         birth_date: '1990-01-01', // Varsayılan doğum tarihi
         gender: 'other', // Varsayılan değer
-        phone: '', // Opsiyonel
       };
 
       const response = await apiService.register(userData);
@@ -84,7 +146,7 @@ export default function RegisterScreen({ navigation, onAuthentication }) {
         // Token'ı kaydet
         apiService.setToken(response.data.token);
         
-        Alert.alert('Başarılı', response.message, [
+        Alert.alert('Başarılı', 'Hesabınız başarıyla oluşturuldu ve 2FA ile doğrulandı!', [
           { text: 'Tamam', onPress: () => {
             // Authentication state'ini güncelle
             if (onAuthentication) {
@@ -94,10 +156,27 @@ export default function RegisterScreen({ navigation, onAuthentication }) {
         ]);
       }
     } catch (error) {
-      console.error('Register error:', error);
-      Alert.alert('Hata', error.message || 'Kayıt yapılırken bir hata oluştu');
-    } finally {
-      setIsLoading(false);
+      console.error('Complete registration error:', error);
+      Alert.alert('Hata', error.message || 'Kayıt tamamlanırken bir hata oluştu');
+    }
+  };
+
+  const resendVerificationCode = async () => {
+    try {
+      const nameParts = formData.name.trim().split(' ');
+      const first_name = nameParts[0];
+      const last_name = nameParts.slice(1).join(' ') || '';
+
+      const response = await apiService.sendRegistration2FA(formData.email, first_name, last_name);
+      
+      if (response.success) {
+        Alert.alert('Başarılı', 'Yeni doğrulama kodu gönderildi');
+      } else {
+        Alert.alert('Hata', response.message || 'Yeni kod gönderilemedi');
+      }
+    } catch (error) {
+      console.error('Resend code error:', error);
+      Alert.alert('Hata', error.message || 'Yeni kod gönderilemedi');
     }
   };
 
@@ -128,8 +207,9 @@ export default function RegisterScreen({ navigation, onAuthentication }) {
                 <Text style={styles.subtitle}>Caddate ailesine katıl</Text>
               </View>
 
-              {/* Form */}
-              <View style={styles.formContainer}>
+              {/* Form - Step 1 */}
+              {step === 1 && (
+                <View style={styles.formContainer}>
                 <View style={styles.inputContainer}>
                   <Ionicons name="person" size={20} color={colors.text.tertiary} style={styles.inputIcon} />
                   <TextInput
@@ -177,6 +257,69 @@ export default function RegisterScreen({ navigation, onAuthentication }) {
                   </TouchableOpacity>
                 </View>
 
+                {/* Şifre güçlülük göstergesi */}
+                {formData.password.length > 0 && (
+                  <View style={styles.passwordStrengthContainer}>
+                    <Text style={styles.passwordStrengthLabel}>Şifre Güçlülüğü:</Text>
+                    <View style={styles.passwordStrengthBar}>
+                      <View style={[
+                        styles.passwordStrengthFill,
+                        {
+                          width: `${(() => {
+                            const password = formData.password;
+                            let strength = 0;
+                            
+                            // Uzunluk kontrolü
+                            if (password.length >= 6) strength += 30;
+                            if (password.length >= 8) strength += 20;
+                            if (password.length >= 10) strength += 10;
+                            
+                            // Özel karakter (zorunlu)
+                            if (/[@$!%*?&.]/.test(password)) strength += 30;
+                            
+                            // Ekstra güçlülük (opsiyonel)
+                            if (/[a-z]/.test(password)) strength += 10;
+                            if (/[A-Z]/.test(password)) strength += 10;
+                            if (/[0-9]/.test(password)) strength += 10;
+                            
+                            return Math.min(strength, 100);
+                          })()}%`,
+                          backgroundColor: (() => {
+                            const password = formData.password;
+                            const strongPasswordRegex = /^(?=.*[@$!%*?&.]).{6,}$/;
+                            
+                            if (password.length < 6) return colors.warning;
+                            if (!/[@$!%*?&.]/.test(password)) return colors.warning;
+                            if (strongPasswordRegex.test(password)) return colors.success;
+                            return colors.accent;
+                          })()
+                        }
+                      ]} />
+                    </View>
+                    <Text style={styles.passwordStrengthText}>
+                      {(() => {
+                        const password = formData.password;
+                        const strongPasswordRegex = /^(?=.*[@$!%*?&.]).{6,}$/;
+                        
+                        if (password.length < 6) return 'Çok kısa';
+                        if (!/[@$!%*?&.]/.test(password)) return 'Özel karakter gerekli';
+                        if (strongPasswordRegex.test(password)) {
+                          // Ekstra güçlülük kontrolü
+                          let bonus = 0;
+                          if (/[a-z]/.test(password)) bonus++;
+                          if (/[A-Z]/.test(password)) bonus++;
+                          if (/[0-9]/.test(password)) bonus++;
+                          
+                          if (bonus >= 2) return 'Çok güçlü';
+                          if (bonus >= 1) return 'Güçlü';
+                          return 'Yeterli';
+                        }
+                        return 'Zayıf';
+                      })()}
+                    </Text>
+                  </View>
+                )}
+
                 <View style={styles.inputContainer}>
                   <Ionicons name="lock-closed" size={20} color={colors.text.tertiary} style={styles.inputIcon} />
                   <TextInput
@@ -210,6 +353,62 @@ export default function RegisterScreen({ navigation, onAuthentication }) {
                   </Text>
                 </TouchableOpacity>
               </View>
+              )}
+
+              {/* 2FA Verification - Step 2 */}
+              {step === 2 && (
+                <View style={styles.formContainer}>
+                  <View style={styles.verificationHeader}>
+                    <Ionicons name="shield-checkmark" size={60} color={colors.primary} />
+                    <Text style={styles.verificationTitle}>2FA Doğrulama</Text>
+                    <Text style={styles.verificationSubtitle}>
+                      Email adresinize gönderilen 6 haneli kodu girin
+                    </Text>
+                    <Text style={styles.emailText}>{formData.email}</Text>
+                  </View>
+
+                  <View style={styles.inputContainer}>
+                    <Ionicons name="key" size={20} color={colors.text.tertiary} style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Doğrulama kodu"
+                      placeholderTextColor={colors.text.tertiary}
+                      value={verificationCode}
+                      onChangeText={setVerificationCode}
+                      keyboardType="numeric"
+                      maxLength={6}
+                      textAlign="center"
+                      style={[styles.input, styles.verificationInput]}
+                    />
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.verifyButton}
+                    onPress={handle2FAVerification}
+                    disabled={isVerifying}
+                  >
+                    <Text style={styles.verifyButtonText}>
+                      {isVerifying ? 'Doğrulanıyor...' : 'Doğrula'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.resendButton}
+                    onPress={resendVerificationCode}
+                    disabled={isVerifying}
+                  >
+                    <Text style={styles.resendButtonText}>Kodu Tekrar Gönder</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.backToFormButton}
+                    onPress={() => setStep(1)}
+                    disabled={isVerifying}
+                  >
+                    <Text style={styles.backToFormButtonText}>← Forma Dön</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
 
               {/* Footer */}
               <View style={styles.footer}>
@@ -335,5 +534,95 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  // 2FA Verification Styles
+  verificationHeader: {
+    alignItems: 'center',
+    marginBottom: 30,
+  },
+  verificationTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: colors.text.primary,
+    marginTop: 15,
+    marginBottom: 10,
+  },
+  verificationSubtitle: {
+    fontSize: 16,
+    color: colors.text.secondary,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  emailText: {
+    fontSize: 14,
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  verificationInput: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    letterSpacing: 5,
+  },
+  verifyButton: {
+    backgroundColor: colors.primary,
+    borderRadius: 25,
+    paddingVertical: 15,
+    alignItems: 'center',
+    marginBottom: 15,
+  },
+  verifyButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  resendButton: {
+    backgroundColor: 'transparent',
+    borderRadius: 25,
+    paddingVertical: 15,
+    alignItems: 'center',
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  resendButtonText: {
+    color: colors.primary,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  backToFormButton: {
+    backgroundColor: 'transparent',
+    borderRadius: 25,
+    paddingVertical: 15,
+    alignItems: 'center',
+  },
+  backToFormButtonText: {
+    color: colors.text.secondary,
+    fontSize: 16,
+  },
+  // Şifre güçlülük göstergesi stilleri
+  passwordStrengthContainer: {
+    marginBottom: 15,
+    marginTop: 5,
+  },
+  passwordStrengthLabel: {
+    fontSize: 12,
+    color: colors.text.secondary,
+    marginBottom: 4,
+  },
+  passwordStrengthBar: {
+    height: 4,
+    backgroundColor: colors.border.light,
+    borderRadius: 2,
+    overflow: 'hidden',
+    marginBottom: 4,
+  },
+  passwordStrengthFill: {
+    height: '100%',
+    borderRadius: 2,
+  },
+  passwordStrengthText: {
+    fontSize: 11,
+    color: colors.text.tertiary,
+    textAlign: 'right',
   },
 });

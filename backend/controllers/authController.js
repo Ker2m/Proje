@@ -4,8 +4,8 @@ const User = require('../models/User');
 const EmailVerification = require('../models/EmailVerification');
 
 // JWT token oluşturma
-const generateToken = (userId) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET, {
+const generateToken = (userId, email) => {
+  return jwt.sign({ userId, email }, process.env.JWT_SECRET, {
     expiresIn: '7d'
   });
 };
@@ -13,7 +13,7 @@ const generateToken = (userId) => {
 // Kullanıcı kayıt
 const register = async (req, res) => {
   try {
-    const { email, password, first_name, last_name, birth_date, gender, phone } = req.body;
+    const { email, password, first_name, last_name, birth_date, gender } = req.body;
 
     // Gerekli alanları kontrol et
     if (!email || !password || !first_name || !last_name) {
@@ -60,8 +60,7 @@ const register = async (req, res) => {
       first_name,
       last_name,
       birth_date,
-      gender,
-      phone
+      gender
     };
 
     const newUser = await User.create(userData);
@@ -89,7 +88,7 @@ const register = async (req, res) => {
     }
 
     // JWT token oluştur
-    const token = generateToken(newUser.id);
+    const token = generateToken(newUser.id, newUser.email);
 
     // Şifreyi response'dan çıkar
     delete newUser.password;
@@ -165,7 +164,7 @@ const login = async (req, res) => {
     }
 
     // JWT token oluştur
-    const token = generateToken(user.id);
+    const token = generateToken(user.id, user.email);
 
     // Şifreyi response'dan çıkar
     delete user.password;

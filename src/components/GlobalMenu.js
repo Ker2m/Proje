@@ -24,6 +24,14 @@ export default function GlobalMenu({ isVisible, onClose, onNavigate }) {
   const menuItems = [
     {
       id: '1',
+      title: 'İTİRAF',
+      icon: 'chatbubbles',
+      color: '#FF6B6B', // Red color for confession
+      gradient: ['#FF6B6B', '#FF8E8E'],
+      description: 'Anonim itiraflar',
+    },
+    {
+      id: '2',
       title: 'SUPPORT',
       icon: 'heart',
       color: '#8B5CF6', // Purple color like in the image
@@ -31,7 +39,7 @@ export default function GlobalMenu({ isVisible, onClose, onNavigate }) {
       description: 'Yardım ve destek',
     },
     {
-      id: '2',
+      id: '3',
       title: 'CREW',
       icon: 'people',
       color: '#374151', // Dark gray
@@ -112,10 +120,13 @@ export default function GlobalMenu({ isVisible, onClose, onNavigate }) {
     // İlgili sayfaya yönlendir
     if (onNavigate) {
       switch (item.id) {
-        case '1': // Support
-          onNavigate('Profile'); // Şimdilik Profile'a yönlendir
+        case '1': // İtiraf
+          onNavigate('Confession');
           break;
-        case '2': // Crew
+        case '2': // Support
+          onNavigate('NotificationCenter'); // Bildirim merkezine yönlendir
+          break;
+        case '3': // Crew
           onNavigate('Profile'); // Şimdilik Profile'a yönlendir
           break;
         default:

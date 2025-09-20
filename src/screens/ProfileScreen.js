@@ -16,10 +16,12 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import apiService from '../services/api';
+import socketService from '../services/socketService';
 import { colors } from '../constants/colors';
 import { 
   scale, 
@@ -37,7 +39,9 @@ import {
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 const bottomSafeArea = getBottomSafeArea();
 
-export default function ProfileScreen({ onLogout, navigation }) {
+export default function ProfileScreen({ route, navigation }) {
+  const { onLogout } = route.params || {};
+  const stackNavigation = useNavigation();
   const [isEditing, setIsEditing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [showImagePicker, setShowImagePicker] = useState(false);
@@ -49,17 +53,25 @@ export default function ProfileScreen({ onLogout, navigation }) {
     email: '',
     birth_date: '',
     gender: '',
-    phone: '',
     profile_picture: '',
+    is_verified: false,
+    email_verified: false,
   });
   const [editData, setEditData] = useState({});
-
-  // İstatistikler ve hızlı erişim verileri
-  const stats = [
-    { label: 'Arkadaş', value: '24', icon: 'people' },
-    { label: 'Mesaj', value: '156', icon: 'chatbubbles' },
-    { label: 'Fotoğraf', value: '89', icon: 'camera' },
-  ];
+  const [userStats, setUserStats] = useState({
+    friends: 0,
+    messages: 0,
+    photos: 0
+  });
+  const [activities, setActivities] = useState([]);
+  const [showNotification, setShowNotification] = useState(false);
+  const [notificationMessage, setNotificationMessage] = useState('');
+  const [isVerifyingEmail, setIsVerifyingEmail] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [showVerificationModal, setShowVerificationModal] = useState(false);
+  const [friends, setFriends] = useState([]);
+  const [showFriendsModal, setShowFriendsModal] = useState(false);
+  const [isLoadingFriends, setIsLoadingFriends] = useState(false);
 
 
   const menuItems = [
@@ -68,45 +80,31 @@ export default function ProfileScreen({ onLogout, navigation }) {
       title: 'Profil Ayarları',
       icon: 'person-outline',
       color: colors.primary,
-      onPress: () => Alert.alert('Bilgi', 'Profil ayarları yakında eklenecek'),
+      onPress: () => stackNavigation.navigate('Settings'),
     },
     {
       id: '2',
       title: 'Abonelik Planım',
       icon: 'diamond-outline',
       color: colors.secondary,
-      onPress: () => Alert.alert('Bilgi', 'Abonelik planları yakında eklenecek'),
+      onPress: () => Alert.alert('Abonelik Planım', 'Şu anda ücretsiz plandasınız.\n\nPremium özellikler yakında eklenecek.'),
     },
     {
       id: '3',
       title: 'Güvenlik',
       icon: 'shield-outline',
       color: colors.accent,
-      onPress: () => Alert.alert('Bilgi', 'Güvenlik ayarları yakında eklenecek'),
+      onPress: () => Alert.alert('Güvenlik', 'Şifre değiştirme ve güvenlik seçenekleri yakında eklenecek.'),
     },
     {
       id: '4',
-      title: 'Bildirimler',
-      icon: 'notifications-outline',
-      color: colors.success,
-      onPress: () => Alert.alert('Bilgi', 'Bildirim ayarları yakında eklenecek'),
-    },
-    {
-      id: '5',
-      title: 'Gizlilik',
-      icon: 'lock-closed-outline',
-      color: colors.warning,
-      onPress: () => Alert.alert('Bilgi', 'Gizlilik ayarları yakında eklenecek'),
-    },
-    {
-      id: '6',
       title: 'Yardım & Destek',
       icon: 'help-circle-outline',
       color: colors.info,
-      onPress: () => Alert.alert('Bilgi', 'Yardım ve destek yakında eklenecek'),
+      onPress: () => Alert.alert('Yardım & Destek', 'Sorularınız için:\n\n📧 Email: destek@caddate.com\n\nYakında canlı destek eklenecek.'),
     },
     {
-      id: '7',
+      id: '5',
       title: 'Hakkında',
       icon: 'information-circle-outline',
       color: colors.primary,
@@ -117,6 +115,68 @@ export default function ProfileScreen({ onLogout, navigation }) {
   // Profil bilgilerini yükle
   useEffect(() => {
     loadProfile();
+    loadUserStats();
+    loadActivities();
+    loadFriends();
+
+    // Socket bağlantısını başlat
+    socketService.connect();
+
+    // İstatistikleri her 30 saniyede bir güncelle
+    const statsInterval = setInterval(() => {
+      loadUserStats();
+    }, 30000);
+
+    return () => {
+      clearInterval(statsInterval);
+      // Socket event listener'larını temizle
+      socketService.off('new_activity');
+      socketService.off('activities_list');
+    };
+  }, []);
+
+  // Ekran focus olduğunda istatistikleri yenile
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadUserStats();
+      loadActivities();
+    });
+
+    return unsubscribe;
+  }, [navigation]);
+
+  // Socket event listener'ları
+  useEffect(() => {
+    // Yeni aktivite geldiğinde
+    const handleNewActivity = (activity) => {
+      console.log('Yeni aktivite alındı:', activity);
+      setActivities(prevActivities => [activity, ...prevActivities.slice(0, 4)]); // Son 5 aktiviteyi tut
+      
+      // Bildirim göster
+      setNotificationMessage(activity.title);
+      setShowNotification(true);
+      
+      // 3 saniye sonra bildirimi gizle
+      setTimeout(() => {
+        setShowNotification(false);
+      }, 3000);
+    };
+
+    // Aktivite listesi geldiğinde
+    const handleActivitiesList = (activitiesList) => {
+      console.log('Aktivite listesi alındı:', activitiesList);
+      setActivities(activitiesList);
+    };
+
+    // Event listener'ları ekle
+    socketService.on('new_activity', handleNewActivity);
+    socketService.on('activities_list', handleActivitiesList);
+
+    return () => {
+      // Cleanup
+      socketService.off('new_activity', handleNewActivity);
+      socketService.off('activities_list', handleActivitiesList);
+    };
   }, []);
 
   const loadProfile = async () => {
@@ -165,6 +225,55 @@ export default function ProfileScreen({ onLogout, navigation }) {
       Alert.alert('Hata', errorMessage);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const loadUserStats = async () => {
+    try {
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        console.log('No token found for stats loading');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
+      console.log('Loading user stats...');
+      const response = await apiService.getUserStats();
+      
+      if (response.success) {
+        console.log('User stats loaded successfully:', response.data);
+        setUserStats(response.data);
+      } else {
+        console.error('Failed to load user stats:', response.message);
+      }
+    } catch (error) {
+      console.error('User stats load error:', error);
+      console.error('Error details:', {
+        message: error.message,
+        stack: error.stack
+      });
+      // İstatistik yükleme hatası kritik değil, sessizce devam et
+      // Ancak varsayılan değerleri kullan
+      setUserStats({
+        friends: 0,
+        messages: 0,
+        photos: 0
+      });
+    }
+  };
+
+  const loadActivities = async () => {
+    try {
+      console.log('Loading activities...');
+      // Socket üzerinden aktivite listesini iste
+      socketService.requestActivities();
+    } catch (error) {
+      console.error('Activities load error:', error);
+      // Hata durumunda boş liste kullan
+      setActivities([]);
     }
   };
 
@@ -368,14 +477,203 @@ export default function ProfileScreen({ onLogout, navigation }) {
     return age;
   };
 
+  const formatActivityTime = (timestamp) => {
+    const now = new Date();
+    const activityTime = new Date(timestamp);
+    const diffInMinutes = Math.floor((now - activityTime) / (1000 * 60));
+    
+    if (diffInMinutes < 1) {
+      return 'Az önce';
+    } else if (diffInMinutes < 60) {
+      return `${diffInMinutes} dk önce`;
+    } else if (diffInMinutes < 1440) {
+      const hours = Math.floor(diffInMinutes / 60);
+      return `${hours} saat önce`;
+    } else {
+      const days = Math.floor(diffInMinutes / 1440);
+      return `${days} gün önce`;
+    }
+  };
+
+  const getActivityIcon = (type) => {
+    switch (type) {
+      case 'message':
+        return 'chatbubble';
+      case 'photo':
+        return 'heart';
+      case 'friend_request':
+        return 'person-add';
+      case 'like':
+        return 'thumbs-up';
+      default:
+        return 'notifications';
+    }
+  };
+
+  const getActivityColor = (type) => {
+    switch (type) {
+      case 'message':
+        return colors.secondary;
+      case 'photo':
+        return colors.primary;
+      case 'friend_request':
+        return colors.accent;
+      case 'like':
+        return colors.success;
+      default:
+        return colors.text.secondary;
+    }
+  };
+
+  // Email doğrulama kodu gönder
+  const sendEmailVerification = async () => {
+    try {
+      setIsVerifyingEmail(true);
+      
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        Alert.alert('Hata', 'Oturum süreniz dolmuş. Lütfen tekrar giriş yapın.');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
+      const response = await apiService.sendVerificationCode(userInfo.email, 'email_verification');
+      
+      if (response.success) {
+        setShowVerificationModal(true);
+        Alert.alert('Başarılı', 'Doğrulama kodu e-posta adresinize gönderildi');
+      } else {
+        Alert.alert('Hata', response.message || 'Doğrulama kodu gönderilemedi');
+      }
+    } catch (error) {
+      console.error('Email verification error:', error);
+      Alert.alert('Hata', error.message || 'Doğrulama kodu gönderilirken bir hata oluştu');
+    } finally {
+      setIsVerifyingEmail(false);
+    }
+  };
+
+  // Email doğrulama kodunu doğrula
+  const verifyEmailCode = async () => {
+    try {
+      if (!verificationCode.trim()) {
+        Alert.alert('Hata', 'Lütfen doğrulama kodunu girin');
+        return;
+      }
+
+      setIsVerifyingEmail(true);
+      
+      const response = await apiService.verifyCode(userInfo.email, verificationCode, 'email_verification');
+      
+      if (response.success) {
+        setShowVerificationModal(false);
+        setVerificationCode('');
+        
+        // Kullanıcı bilgilerini güncelle
+        setUserInfo({...userInfo, email_verified: true, is_verified: true});
+        
+        Alert.alert('Başarılı', 'E-posta adresiniz başarıyla doğrulandı');
+      } else {
+        Alert.alert('Hata', response.message || 'Doğrulama kodu hatalı');
+      }
+    } catch (error) {
+      console.error('Email verification error:', error);
+      Alert.alert('Hata', error.message || 'Doğrulama sırasında bir hata oluştu');
+    } finally {
+      setIsVerifyingEmail(false);
+    }
+  };
+
+  // Arkadaş listesini yükle
+  const loadFriends = async () => {
+    try {
+      setIsLoadingFriends(true);
+      
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        console.log('No token found for friends loading');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
+      const response = await apiService.getFriends();
+      
+      if (response.success) {
+        setFriends(response.data);
+      } else {
+        console.error('Failed to load friends:', response.message);
+      }
+    } catch (error) {
+      console.error('Friends load error:', error);
+    } finally {
+      setIsLoadingFriends(false);
+    }
+  };
+
+  // Arkadaş çıkar
+  const removeFriend = async (friendId, friendName) => {
+    Alert.alert(
+      'Arkadaş Çıkar',
+      `${friendName} arkadaş listenizden çıkarılsın mı?`,
+      [
+        { text: 'İptal', style: 'cancel' },
+        {
+          text: 'Çıkar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const response = await apiService.removeFriend(friendId);
+              
+              if (response.success) {
+                // Arkadaş listesini güncelle
+                setFriends(friends.filter(friend => friend.id !== friendId));
+                // İstatistikleri güncelle
+                setUserStats(prev => ({...prev, friends: prev.friends - 1}));
+                Alert.alert('Başarılı', 'Arkadaş listeden çıkarıldı');
+              } else {
+                Alert.alert('Hata', response.message || 'Arkadaş çıkarılırken bir hata oluştu');
+              }
+            } catch (error) {
+              console.error('Remove friend error:', error);
+              Alert.alert('Hata', error.message || 'Arkadaş çıkarılırken bir hata oluştu');
+            }
+          }
+        }
+      ]
+    );
+  };
+
 
   const renderStat = (stat, index) => (
-    <View key={index} style={styles.statCard}>
+    <TouchableOpacity 
+      key={index} 
+      style={styles.statCard}
+      onPress={() => {
+        if (stat.label === 'Arkadaş') {
+          setShowFriendsModal(true);
+        } else {
+          Alert.alert('Bilgi', `${stat.label} detayları yakında eklenecek`);
+        }
+      }}
+    >
       <Ionicons name={stat.icon} size={24} color={colors.primary} />
       <Text style={styles.statValue}>{stat.value}</Text>
       <Text style={styles.statLabel}>{stat.label}</Text>
-    </View>
+    </TouchableOpacity>
   );
+
+  // İstatistikler ve hızlı erişim verileri - gerçek verilerle
+  const stats = [
+    { label: 'Arkadaş', value: userStats.friends.toString(), icon: 'people' },
+    { label: 'Mesaj', value: userStats.messages.toString(), icon: 'chatbubbles' },
+    { label: 'Fotoğraf', value: userStats.photos.toString(), icon: 'camera' },
+  ];
 
   const renderMenuItem = (item) => (
     <TouchableOpacity
@@ -480,121 +778,210 @@ export default function ProfileScreen({ onLogout, navigation }) {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Son Aktiviteler</Text>
             <View style={styles.activityCard}>
-              <View style={styles.activityItem}>
-                <Ionicons name="chatbubble" size={20} color={colors.secondary} />
-                <Text style={styles.activityText}>Yeni mesaj aldın</Text>
-                <Text style={styles.activityTime}>2 dk önce</Text>
-              </View>
-              <View style={styles.activityItem}>
-                <Ionicons name="heart" size={20} color={colors.primary} />
-                <Text style={styles.activityText}>Fotoğrafın beğenildi</Text>
-                <Text style={styles.activityTime}>15 dk önce</Text>
-              </View>
-              <View style={styles.activityItem}>
-                <Ionicons name="person-add" size={20} color={colors.accent} />
-                <Text style={styles.activityText}>Yeni arkadaş eklendi</Text>
-                <Text style={styles.activityTime}>1 saat önce</Text>
-              </View>
+              {activities.length > 0 ? (
+                activities.map((activity, index) => (
+                  <View key={activity.id || index} style={styles.activityItem}>
+                    <Ionicons 
+                      name={getActivityIcon(activity.type)} 
+                      size={20} 
+                      color={getActivityColor(activity.type)} 
+                    />
+                    <Text style={styles.activityText}>{activity.title}</Text>
+                    <Text style={styles.activityTime}>{formatActivityTime(activity.timestamp)}</Text>
+                  </View>
+                ))
+              ) : (
+                <View style={styles.noActivityContainer}>
+                  <Ionicons name="time-outline" size={24} color={colors.text.tertiary} />
+                  <Text style={styles.noActivityText}>Henüz aktivite bulunmuyor</Text>
+                </View>
+              )}
             </View>
           </View>
 
 
-          {/* Profile Form */}
+          {/* Profile Form - Modern Design */}
           <View style={styles.formContainer}>
-            <Text style={styles.sectionTitle}>Profil Bilgileri</Text>
-            
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Ad</Text>
-              {isEditing ? (
-                <TextInput
-                  style={styles.input}
-                  value={editData.first_name || ''}
-                  onChangeText={(text) => setEditData({...editData, first_name: text})}
-                  placeholder="Adınız"
-                />
-              ) : (
-                <Text style={styles.value}>{userInfo.first_name}</Text>
-              )}
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionIconContainer}>
+                <Ionicons name="person-circle" size={24} color={colors.primary} />
               </View>
+              <Text style={styles.sectionTitle}>Profil Bilgileri</Text>
+            </View>
+            
+            {/* Personal Info Card */}
+            <View style={styles.infoCard}>
+              <View style={styles.cardHeader}>
+                <Ionicons name="person-outline" size={20} color={colors.primary} />
+                <Text style={styles.cardTitle}>Kişisel Bilgiler</Text>
+              </View>
+              
+              <View style={styles.inputRow}>
+                <View style={[styles.inputGroup, styles.halfWidth]}>
+                  <View style={styles.labelContainer}>
+                    <Ionicons name="person" size={16} color={colors.text.secondary} />
+                    <Text style={styles.label}>Ad</Text>
+                  </View>
+                  {isEditing ? (
+                    <TextInput
+                      style={styles.modernInput}
+                      value={editData.first_name || ''}
+                      onChangeText={(text) => setEditData({...editData, first_name: text})}
+                      placeholder="Adınız"
+                      placeholderTextColor={colors.text.tertiary}
+                    />
+                  ) : (
+                    <View style={styles.valueContainer}>
+                      <Text style={styles.value}>{userInfo.first_name || 'Belirtilmemiş'}</Text>
+                    </View>
+                  )}
+                </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Soyad</Text>
-              {isEditing ? (
-                <TextInput
-                  style={styles.input}
-                  value={editData.last_name || ''}
-                  onChangeText={(text) => setEditData({...editData, last_name: text})}
-                  placeholder="Soyadınız"
-                />
-              ) : (
-                <Text style={styles.value}>{userInfo.last_name}</Text>
-              )}
-          </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>E-posta</Text>
-              <Text style={styles.value}>{userInfo.email}</Text>
+                <View style={[styles.inputGroup, styles.halfWidth]}>
+                  <View style={styles.labelContainer}>
+                    <Ionicons name="person" size={16} color={colors.text.secondary} />
+                    <Text style={styles.label}>Soyad</Text>
+                  </View>
+                  {isEditing ? (
+                    <TextInput
+                      style={styles.modernInput}
+                      value={editData.last_name || ''}
+                      onChangeText={(text) => setEditData({...editData, last_name: text})}
+                      placeholder="Soyadınız"
+                      placeholderTextColor={colors.text.tertiary}
+                    />
+                  ) : (
+                    <View style={styles.valueContainer}>
+                      <Text style={styles.value}>{userInfo.last_name || 'Belirtilmemiş'}</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Doğum Tarihi</Text>
-              {isEditing ? (
-                <TextInput
-                  style={styles.input}
-                  value={editData.birth_date || ''}
-                  onChangeText={(text) => setEditData({...editData, birth_date: text})}
-                  placeholder="YYYY-MM-DD"
-                />
-              ) : (
-                <Text style={styles.value}>{userInfo.birth_date}</Text>
-              )}
-          </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Cinsiyet</Text>
-              {isEditing ? (
-                <View style={styles.genderContainer}>
-                  {['male', 'female', 'other'].map((gender) => (
-                    <TouchableOpacity
-                      key={gender}
-                      style={[
-                        styles.genderOption,
-                        editData.gender === gender && styles.genderOptionSelected
-                      ]}
-                      onPress={() => setEditData({...editData, gender})}
+            {/* Contact Info Card */}
+            <View style={styles.infoCard}>
+              <View style={styles.cardHeader}>
+                <Ionicons name="mail-outline" size={20} color={colors.secondary} />
+                <Text style={styles.cardTitle}>İletişim Bilgileri</Text>
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <View style={styles.labelContainer}>
+                  <Ionicons name="mail" size={16} color={colors.text.secondary} />
+                  <Text style={styles.label}>E-posta</Text>
+                </View>
+                <View style={styles.valueContainer}>
+                  <Text style={styles.value}>{userInfo.email}</Text>
+                  {userInfo.email_verified ? (
+                    <Ionicons name="checkmark-circle" size={16} color={colors.success} style={styles.verifiedIcon} />
+                  ) : (
+                    <TouchableOpacity 
+                      style={styles.verifyButton}
+                      onPress={sendEmailVerification}
+                      disabled={isVerifyingEmail}
                     >
-                      <Text style={[
-                        styles.genderText,
-                        editData.gender === gender && styles.genderTextSelected
-                      ]}>
-                        {gender === 'male' ? 'Erkek' : gender === 'female' ? 'Kadın' : 'Diğer'}
+                      <Ionicons 
+                        name="mail-unread" 
+                        size={16} 
+                        color={colors.warning} 
+                        style={styles.verifyIcon} 
+                      />
+                      <Text style={styles.verifyText}>
+                        {isVerifyingEmail ? 'Gönderiliyor...' : 'Doğrula'}
                       </Text>
                     </TouchableOpacity>
-                  ))}
+                  )}
                 </View>
-              ) : (
-                <Text style={styles.value}>
-                  {userInfo.gender === 'male' ? 'Erkek' : 
-                   userInfo.gender === 'female' ? 'Kadın' : 
-                   userInfo.gender === 'other' ? 'Diğer' : userInfo.gender}
-                </Text>
-              )}
+              </View>
+
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Telefon</Text>
-              {isEditing ? (
-                <TextInput
-                  style={styles.input}
-                  value={editData.phone || ''}
-                  onChangeText={(text) => setEditData({...editData, phone: text})}
-                  placeholder="Telefon numarası"
-                  keyboardType="phone-pad"
-                />
-              ) : (
-                <Text style={styles.value}>{userInfo.phone || 'Belirtilmemiş'}</Text>
-              )}
-          </View>
+            {/* Personal Details Card */}
+            <View style={styles.infoCard}>
+              <View style={styles.cardHeader}>
+                <Ionicons name="calendar-outline" size={20} color={colors.accent} />
+                <Text style={styles.cardTitle}>Kişisel Detaylar</Text>
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <View style={styles.labelContainer}>
+                  <Ionicons name="calendar" size={16} color={colors.text.secondary} />
+                  <Text style={styles.label}>Doğum Tarihi</Text>
+                </View>
+                {isEditing ? (
+                  <TextInput
+                    style={styles.modernInput}
+                    value={editData.birth_date || ''}
+                    onChangeText={(text) => setEditData({...editData, birth_date: text})}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor={colors.text.tertiary}
+                  />
+                ) : (
+                  <View style={styles.valueContainer}>
+                    <Text style={styles.value}>
+                      {userInfo.birth_date ? 
+                        userInfo.birth_date.split('T')[0].split('-').reverse().join('/') : 
+                        'Belirtilmemiş'
+                      }
+                    </Text>
+                    {userInfo.birth_date && (
+                      <Text style={styles.ageText}>({calculateAge(userInfo.birth_date)} yaşında)</Text>
+                    )}
+                  </View>
+                )}
+              </View>
+
+              <View style={styles.inputGroup}>
+                <View style={styles.labelContainer}>
+                  <Ionicons name="male-female" size={16} color={colors.text.secondary} />
+                  <Text style={styles.label}>Cinsiyet</Text>
+                </View>
+                {isEditing ? (
+                  <View style={styles.genderContainer}>
+                    {[
+                      { value: 'male', label: 'Erkek', icon: 'male' },
+                      { value: 'female', label: 'Kadın', icon: 'female' },
+                      { value: 'other', label: 'Diğer', icon: 'transgender' }
+                    ].map((gender) => (
+                      <TouchableOpacity
+                        key={gender.value}
+                        style={[
+                          styles.genderOption,
+                          editData.gender === gender.value && styles.genderOptionSelected
+                        ]}
+                        onPress={() => setEditData({...editData, gender: gender.value})}
+                      >
+                        <Ionicons 
+                          name={gender.icon} 
+                          size={18} 
+                          color={editData.gender === gender.value ? '#FFFFFF' : colors.text.secondary} 
+                        />
+                        <Text style={[
+                          styles.genderText,
+                          editData.gender === gender.value && styles.genderTextSelected
+                        ]}>
+                          {gender.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.valueContainer}>
+                    <Ionicons 
+                      name={userInfo.gender === 'male' ? 'male' : userInfo.gender === 'female' ? 'female' : 'transgender'} 
+                      size={16} 
+                      color={colors.primary} 
+                    />
+                    <Text style={styles.value}>
+                      {userInfo.gender === 'male' ? 'Erkek' : 
+                       userInfo.gender === 'female' ? 'Kadın' : 
+                       userInfo.gender === 'other' ? 'Diğer' : userInfo.gender || 'Belirtilmemiş'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </View>
 
             {isEditing && (
               <View style={styles.buttonContainer}>
@@ -603,9 +990,19 @@ export default function ProfileScreen({ onLogout, navigation }) {
                   onPress={handleSave}
                   disabled={isLoading}
                 >
+                  <Ionicons name="checkmark" size={20} color="#FFFFFF" />
                   <Text style={styles.buttonText}>
-                    {isLoading ? 'Kaydediliyor...' : 'Kaydet'}
+                    {isLoading ? 'Kaydediliyor...' : 'Değişiklikleri Kaydet'}
                   </Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={[styles.button, styles.cancelButton]}
+                  onPress={handleCancel}
+                  disabled={isLoading}
+                >
+                  <Ionicons name="close" size={20} color={colors.text.secondary} />
+                  <Text style={styles.cancelButtonText}>İptal</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -687,6 +1084,123 @@ export default function ProfileScreen({ onLogout, navigation }) {
             />
           </View>
         </Modal>
+
+        {/* Email Doğrulama Modal */}
+        <Modal
+          visible={showVerificationModal}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowVerificationModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.verificationModalContent}>
+              <Text style={styles.verificationModalTitle}>E-posta Doğrulama</Text>
+              <Text style={styles.verificationModalSubtitle}>
+                {userInfo.email} adresine gönderilen doğrulama kodunu girin
+              </Text>
+              
+              <TextInput
+                style={styles.verificationInput}
+                value={verificationCode}
+                onChangeText={setVerificationCode}
+                placeholder="Doğrulama kodu"
+                placeholderTextColor={colors.text.tertiary}
+                keyboardType="number-pad"
+                maxLength={6}
+                autoFocus={true}
+              />
+              
+              <View style={styles.verificationButtonContainer}>
+                <TouchableOpacity
+                  style={[styles.verificationButton, styles.cancelVerificationButton]}
+                  onPress={() => {
+                    setShowVerificationModal(false);
+                    setVerificationCode('');
+                  }}
+                >
+                  <Text style={styles.cancelVerificationButtonText}>İptal</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={[styles.verificationButton, styles.confirmVerificationButton]}
+                  onPress={verifyEmailCode}
+                  disabled={isVerifyingEmail || !verificationCode.trim()}
+                >
+                  <Text style={styles.confirmVerificationButtonText}>
+                    {isVerifyingEmail ? 'Doğrulanıyor...' : 'Doğrula'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Arkadaş Listesi Modal */}
+        <Modal
+          visible={showFriendsModal}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowFriendsModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.friendsModalContent}>
+              <View style={styles.friendsModalHeader}>
+                <Text style={styles.friendsModalTitle}>Arkadaşlarım</Text>
+                <TouchableOpacity
+                  style={styles.closeButton}
+                  onPress={() => setShowFriendsModal(false)}
+                >
+                  <Ionicons name="close" size={24} color={colors.text.secondary} />
+                </TouchableOpacity>
+              </View>
+              
+              {isLoadingFriends ? (
+                <View style={styles.loadingContainer}>
+                  <Text style={styles.loadingText}>Arkadaşlar yükleniyor...</Text>
+                </View>
+              ) : friends.length > 0 ? (
+                <ScrollView style={styles.friendsList}>
+                  {friends.map((friend) => (
+                    <View key={friend.id} style={styles.friendItem}>
+                      <Image
+                        source={{ 
+                          uri: friend.profile_picture || 'https://via.placeholder.com/50x50/cccccc/666666?text=Profil' 
+                        }}
+                        style={styles.friendAvatar}
+                      />
+                      <View style={styles.friendInfo}>
+                        <Text style={styles.friendName}>{friend.name}</Text>
+                        <Text style={styles.friendEmail}>{friend.email}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.removeFriendButton}
+                        onPress={() => removeFriend(friend.id, friend.name)}
+                      >
+                        <Ionicons name="trash-outline" size={20} color={colors.warning} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </ScrollView>
+              ) : (
+                <View style={styles.noFriendsContainer}>
+                  <Ionicons name="people-outline" size={48} color={colors.text.tertiary} />
+                  <Text style={styles.noFriendsText}>Henüz arkadaşınız yok</Text>
+                  <Text style={styles.noFriendsSubtext}>Yeni arkadaşlar ekleyerek sosyal ağınızı genişletin</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* Notification Toast */}
+        {showNotification && (
+          <View style={styles.notificationContainer}>
+            <View style={styles.notificationContent}>
+              <Ionicons name="notifications" size={20} color="#FFFFFF" />
+              <Text style={styles.notificationText}>{notificationMessage}</Text>
+            </View>
+          </View>
+        )}
       </View>
     );
   }
@@ -832,55 +1346,145 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.8)',
   },
   formContainer: {
-    backgroundColor: colors.surface,
     marginHorizontal: getResponsivePadding(20),
     marginTop: verticalScale(30),
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: verticalScale(20),
+    paddingHorizontal: getResponsivePadding(5),
+  },
+  sectionIconContainer: {
+    width: scale(40),
+    height: scale(40),
+    borderRadius: scale(20),
+    backgroundColor: colors.primary + '15',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: scale(12),
+  },
+  infoCard: {
+    backgroundColor: colors.surface,
+    borderRadius: scale(16),
     padding: getResponsivePadding(20),
-    borderRadius: scale(15),
+    marginBottom: verticalScale(16),
     shadowColor: colors.shadow.dark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: colors.border.light + '20',
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: verticalScale(16),
+    paddingBottom: verticalScale(12),
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border.light + '30',
+  },
+  cardTitle: {
+    fontSize: scaleFont(16),
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginLeft: scale(8),
+  },
+  inputRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
   },
   inputGroup: {
-    marginBottom: verticalScale(15),
+    marginBottom: verticalScale(16),
+  },
+  halfWidth: {
+    width: '48%',
+  },
+  labelContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: verticalScale(8),
   },
   label: {
-    fontSize: scaleFont(14),
+    fontSize: scaleFont(13),
     fontWeight: '600',
     color: colors.text.secondary,
-    marginBottom: verticalScale(5),
+    marginLeft: scale(6),
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
-  input: {
-    borderWidth: 1,
+  modernInput: {
+    borderWidth: 1.5,
     borderColor: colors.border.light,
-    borderRadius: scale(8),
-    padding: getResponsivePadding(12),
-    fontSize: scaleFont(16),
+    borderRadius: scale(12),
+    paddingHorizontal: getResponsivePadding(16),
+    paddingVertical: verticalScale(14),
+    fontSize: scaleFont(15),
     backgroundColor: colors.background,
     color: colors.text.primary,
+    fontFamily: 'System',
+  },
+  valueContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: verticalScale(12),
+    paddingHorizontal: getResponsivePadding(4),
   },
   value: {
-    fontSize: scaleFont(16),
+    fontSize: scaleFont(15),
     color: colors.text.primary,
-    paddingVertical: verticalScale(12),
+    fontWeight: '500',
+    flex: 1,
+  },
+  verifiedIcon: {
+    marginLeft: scale(8),
+  },
+  ageText: {
+    fontSize: scaleFont(13),
+    color: colors.text.tertiary,
+    fontStyle: 'italic',
+    marginLeft: scale(8),
   },
   buttonContainer: {
-    marginTop: verticalScale(20),
+    marginTop: verticalScale(24),
+    flexDirection: 'row',
+    justifyContent: 'space-between',
   },
   button: {
-    padding: getResponsivePadding(15),
-    borderRadius: scale(8),
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: getResponsivePadding(20),
+    paddingVertical: verticalScale(14),
+    borderRadius: scale(12),
+    flex: 1,
+    marginHorizontal: scale(4),
   },
   saveButton: {
     backgroundColor: colors.primary,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  cancelButton: {
+    backgroundColor: colors.surface,
+    borderWidth: 1.5,
+    borderColor: colors.border.light,
   },
   buttonText: {
     color: '#FFFFFF',
-    fontSize: scaleFont(16),
+    fontSize: scaleFont(15),
+    fontWeight: '700',
+    marginLeft: scale(8),
+  },
+  cancelButtonText: {
+    color: colors.text.secondary,
+    fontSize: scaleFont(15),
     fontWeight: '600',
+    marginLeft: scale(8),
   },
   actionsContainer: {
     paddingHorizontal: getResponsivePadding(20),
@@ -983,31 +1587,39 @@ const styles = StyleSheet.create({
   genderContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: verticalScale(5),
+    marginTop: verticalScale(8),
   },
   genderOption: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
     paddingVertical: verticalScale(12),
-    paddingHorizontal: getResponsivePadding(15),
-    marginHorizontal: scale(5),
-    borderRadius: scale(8),
-    borderWidth: 1,
+    paddingHorizontal: getResponsivePadding(12),
+    marginHorizontal: scale(4),
+    borderRadius: scale(12),
+    borderWidth: 1.5,
     borderColor: colors.border.light,
     backgroundColor: colors.background,
-    alignItems: 'center',
   },
   genderOptionSelected: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
   },
   genderText: {
-    fontSize: scaleFont(14),
+    fontSize: scaleFont(13),
     color: colors.text.secondary,
-    fontWeight: '500',
+    fontWeight: '600',
+    marginLeft: scale(6),
   },
   genderTextSelected: {
     color: '#FFFFFF',
-    fontWeight: '600',
+    fontWeight: '700',
   },
   // Modal stilleri
   modalOverlay: {
@@ -1079,5 +1691,230 @@ const styles = StyleSheet.create({
     height: screenHeight * 0.7,
     maxWidth: scale(400),
     maxHeight: scale(600),
+  },
+  // Aktivite stilleri
+  noActivityContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: verticalScale(20),
+  },
+  noActivityText: {
+    fontSize: scaleFont(14),
+    color: colors.text.tertiary,
+    marginLeft: scale(10),
+    fontStyle: 'italic',
+  },
+  // Bildirim stilleri
+  notificationContainer: {
+    position: 'absolute',
+    top: isAndroid ? StatusBar.currentHeight + scale(20) : scale(60),
+    left: scale(20),
+    right: scale(20),
+    zIndex: 1000,
+  },
+  notificationContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    paddingHorizontal: getResponsivePadding(15),
+    paddingVertical: verticalScale(12),
+    borderRadius: scale(8),
+    shadowColor: colors.shadow.dark,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  notificationText: {
+    color: '#FFFFFF',
+    fontSize: scaleFont(14),
+    fontWeight: '500',
+    marginLeft: scale(10),
+    flex: 1,
+  },
+  // Doğrulama butonları
+  verifyButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.warning + '20',
+    paddingHorizontal: scale(8),
+    paddingVertical: verticalScale(4),
+    borderRadius: scale(12),
+    borderWidth: 1,
+    borderColor: colors.warning + '40',
+  },
+  verifyIcon: {
+    marginRight: scale(4),
+  },
+  verifyText: {
+    fontSize: scaleFont(12),
+    color: colors.warning,
+    fontWeight: '600',
+  },
+  // Doğrulama modal stilleri
+  verificationModalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: scale(20),
+    padding: getResponsivePadding(25),
+    width: screenWidth * 0.9,
+    maxWidth: scale(350),
+    shadowColor: colors.shadow.dark,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  verificationModalTitle: {
+    fontSize: scaleFont(20),
+    fontWeight: 'bold',
+    color: colors.text.primary,
+    textAlign: 'center',
+    marginBottom: verticalScale(10),
+  },
+  verificationModalSubtitle: {
+    fontSize: scaleFont(14),
+    color: colors.text.secondary,
+    textAlign: 'center',
+    marginBottom: verticalScale(20),
+    lineHeight: scaleFont(20),
+  },
+  verificationInput: {
+    borderWidth: 2,
+    borderColor: colors.border.light,
+    borderRadius: scale(12),
+    paddingHorizontal: getResponsivePadding(16),
+    paddingVertical: verticalScale(14),
+    fontSize: scaleFont(18),
+    textAlign: 'center',
+    backgroundColor: colors.background,
+    color: colors.text.primary,
+    marginBottom: verticalScale(20),
+    letterSpacing: scale(2),
+  },
+  verificationButtonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  verificationButton: {
+    flex: 1,
+    paddingVertical: verticalScale(12),
+    borderRadius: scale(12),
+    marginHorizontal: scale(4),
+  },
+  cancelVerificationButton: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border.light,
+  },
+  confirmVerificationButton: {
+    backgroundColor: colors.primary,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  cancelVerificationButtonText: {
+    color: colors.text.secondary,
+    fontSize: scaleFont(15),
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  confirmVerificationButtonText: {
+    color: '#FFFFFF',
+    fontSize: scaleFont(15),
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  // Arkadaş listesi modal stilleri
+  friendsModalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: scale(20),
+    padding: getResponsivePadding(20),
+    width: screenWidth * 0.95,
+    maxHeight: screenHeight * 0.8,
+    shadowColor: colors.shadow.dark,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  friendsModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: verticalScale(20),
+    paddingBottom: verticalScale(15),
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border.light + '30',
+  },
+  friendsModalTitle: {
+    fontSize: scaleFont(20),
+    fontWeight: 'bold',
+    color: colors.text.primary,
+  },
+  closeButton: {
+    padding: scale(8),
+    borderRadius: scale(20),
+    backgroundColor: colors.background,
+  },
+  friendsList: {
+    maxHeight: screenHeight * 0.6,
+  },
+  friendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: verticalScale(12),
+    paddingHorizontal: getResponsivePadding(15),
+    backgroundColor: colors.background,
+    borderRadius: scale(12),
+    marginBottom: verticalScale(8),
+    shadowColor: colors.shadow.light,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  friendAvatar: {
+    width: scale(50),
+    height: scale(50),
+    borderRadius: scale(25),
+    marginRight: scale(15),
+  },
+  friendInfo: {
+    flex: 1,
+  },
+  friendName: {
+    fontSize: scaleFont(16),
+    fontWeight: '600',
+    color: colors.text.primary,
+    marginBottom: verticalScale(2),
+  },
+  friendEmail: {
+    fontSize: scaleFont(14),
+    color: colors.text.secondary,
+  },
+  removeFriendButton: {
+    padding: scale(8),
+    borderRadius: scale(8),
+    backgroundColor: colors.warning + '20',
+  },
+  noFriendsContainer: {
+    alignItems: 'center',
+    paddingVertical: verticalScale(40),
+  },
+  noFriendsText: {
+    fontSize: scaleFont(18),
+    fontWeight: '600',
+    color: colors.text.primary,
+    marginTop: verticalScale(15),
+    marginBottom: verticalScale(8),
+  },
+  noFriendsSubtext: {
+    fontSize: scaleFont(14),
+    color: colors.text.secondary,
+    textAlign: 'center',
+    lineHeight: scaleFont(20),
   },
 });

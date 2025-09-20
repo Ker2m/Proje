@@ -18,6 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { colors } from '../constants/colors';
 import socketService from '../services/socketService';
+import apiService from '../services/api';
 import { 
   scale, 
   verticalScale, 
@@ -33,27 +34,66 @@ const { width: screenWidth } = Dimensions.get('window');
 const bottomSafeArea = getBottomSafeArea();
 
 export default function SettingsScreen({ navigation }) {
-  const [notifications, setNotifications] = useState(true);
-  const [locationSharing, setLocationSharing] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
-  const [emailNotifications, setEmailNotifications] = useState(true);
-  const [pushNotifications, setPushNotifications] = useState(true);
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [vibrationEnabled, setVibrationEnabled] = useState(true);
+  const [settings, setSettings] = useState({
+    notifications: true,
+    locationSharing: false,
+    soundEnabled: true,
+    vibrationEnabled: true,
+    emailNotifications: true,
+    privacy: {
+      profileVisibility: 'public',
+      showOnlineStatus: true,
+      allowMessages: true,
+      showLocation: false
+    }
+  });
   const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
   const [lastSync, setLastSync] = useState(null);
+  const [error, setError] = useState(null);
 
   // Socket.io entegrasyonu
   useEffect(() => {
     initializeSocket();
     loadSettings();
+    initializeNotifications();
     
     return () => {
       // Cleanup
       socketService.removeAllListeners();
     };
   }, []);
+
+  // Bildirimleri başlat
+  const initializeNotifications = async () => {
+    try {
+      // Bildirim izinlerini kontrol et
+      const { status } = await Notifications.getPermissionsAsync();
+      
+      if (status !== 'granted') {
+        // İzin iste
+        const { status: newStatus } = await Notifications.requestPermissionsAsync();
+        if (newStatus !== 'granted') {
+          console.log('Bildirim izni verilmedi');
+          return;
+        }
+      }
+
+      // Bildirim handler'ını ayarla
+      await Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowAlert: true,
+          shouldPlaySound: settings.soundEnabled,
+          shouldSetBadge: true,
+        }),
+      });
+
+      console.log('Bildirimler başlatıldı');
+    } catch (error) {
+      console.error('Bildirim başlatma hatası:', error);
+    }
+  };
 
   // Socket bağlantısını başlat
   const initializeSocket = async () => {
@@ -92,7 +132,6 @@ export default function SettingsScreen({ navigation }) {
       // State'i güncelle
       if (settings.notifications !== undefined) setNotifications(settings.notifications);
       if (settings.locationSharing !== undefined) setLocationSharing(settings.locationSharing);
-      if (settings.darkMode !== undefined) setDarkMode(settings.darkMode);
       if (settings.emailNotifications !== undefined) setEmailNotifications(settings.emailNotifications);
       if (settings.pushNotifications !== undefined) setPushNotifications(settings.pushNotifications);
       if (settings.soundEnabled !== undefined) setSoundEnabled(settings.soundEnabled);
@@ -111,13 +150,13 @@ export default function SettingsScreen({ navigation }) {
   const handleNotificationFromServer = (data) => {
     console.log('Notification from server:', data);
     
-    if (pushNotifications) {
+    if (settings.notifications) {
       // Bildirim göster
       Notifications.scheduleNotificationAsync({
         content: {
           title: data.title || 'Caddate',
           body: data.message || 'Yeni bildirim',
-          sound: soundEnabled,
+          sound: settings.soundEnabled ? true : false,
         },
         trigger: null, // Hemen göster
       });
@@ -134,19 +173,40 @@ export default function SettingsScreen({ navigation }) {
   const loadSettings = async () => {
     try {
       setIsLoading(true);
-      const settings = await AsyncStorage.getItem('userSettings');
-      if (settings) {
-        const parsedSettings = JSON.parse(settings);
-        setNotifications(parsedSettings.notifications ?? true);
-        setLocationSharing(parsedSettings.locationSharing ?? false);
-        setDarkMode(parsedSettings.darkMode ?? false);
-        setEmailNotifications(parsedSettings.emailNotifications ?? true);
-        setPushNotifications(parsedSettings.pushNotifications ?? true);
-        setSoundEnabled(parsedSettings.soundEnabled ?? true);
-        setVibrationEnabled(parsedSettings.vibrationEnabled ?? true);
+      setError(null);
+      
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        throw new Error('Oturum süreniz dolmuş. Lütfen tekrar giriş yapın.');
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
+      // Backend'den ayarları al
+      const response = await apiService.getSettings();
+      
+      if (response.success) {
+        setSettings(response.data.settings);
+        setLastSync(new Date().toLocaleTimeString());
+      } else {
+        throw new Error(response.message || 'Ayarlar yüklenirken bir hata oluştu');
       }
     } catch (error) {
       console.error('Settings load error:', error);
+      setError(error.message);
+      
+      // Hata durumunda local storage'dan yükle
+      try {
+        const localSettings = await AsyncStorage.getItem('userSettings');
+        if (localSettings) {
+          const parsedSettings = JSON.parse(localSettings);
+          setSettings(parsedSettings);
+        }
+      } catch (localError) {
+        console.error('Local settings load error:', localError);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -165,31 +225,49 @@ export default function SettingsScreen({ navigation }) {
   // Ayarları kaydet (hem local hem server)
   const saveSettings = async (newSettings) => {
     try {
-      const currentSettings = {
-        notifications,
-        locationSharing,
-        darkMode,
-        emailNotifications,
-        pushNotifications,
-        soundEnabled,
-        vibrationEnabled,
+      setIsSaving(true);
+      setError(null);
+      
+      const updatedSettings = {
+        ...settings,
         ...newSettings
       };
       
-      // Local storage'a kaydet
-      await saveSettingsToLocal(currentSettings);
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        throw new Error('Oturum süreniz dolmuş. Lütfen tekrar giriş yapın.');
+      }
       
-      // Sunucuya gönder
-      await socketService.updateSettings(currentSettings);
+      // Token'ı API servisine set et
+      apiService.setToken(token);
       
-      // Bildirim ayarlarını uygula
-      await applyNotificationSettings(currentSettings);
+      // Backend'e gönder
+      const response = await apiService.updateSettings(updatedSettings);
       
-      setLastSync(new Date().toLocaleTimeString());
-      console.log('Settings saved:', currentSettings);
+      if (response.success) {
+        // State'i güncelle
+        setSettings(updatedSettings);
+        
+        // Local storage'a kaydet
+        await saveSettingsToLocal(updatedSettings);
+        
+        // Bildirim ayarlarını uygula
+        await applyNotificationSettings(updatedSettings);
+        
+        setLastSync(new Date().toLocaleTimeString());
+        console.log('Settings saved:', updatedSettings);
+        
+        Alert.alert('Başarılı', 'Ayarlar başarıyla kaydedildi');
+      } else {
+        throw new Error(response.message || 'Ayarlar kaydedilirken bir hata oluştu');
+      }
     } catch (error) {
       console.error('Settings save error:', error);
-      Alert.alert('Hata', 'Ayarlar kaydedilirken bir hata oluştu');
+      setError(error.message);
+      Alert.alert('Hata', error.message || 'Ayarlar kaydedilirken bir hata oluştu');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -221,8 +299,15 @@ export default function SettingsScreen({ navigation }) {
   // Test bildirimi gönder
   const sendTestNotification = async () => {
     try {
-      if (!pushNotifications) {
+      if (!settings.notifications) {
         Alert.alert('Bilgi', 'Push bildirimleri kapalı. Önce bildirimleri açın.');
+        return;
+      }
+
+      // Bildirim izinlerini kontrol et
+      const { status } = await Notifications.getPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Bildirim İzni', 'Bildirimler için izin verilmedi. Lütfen ayarlardan bildirim izinlerini açın.');
         return;
       }
 
@@ -230,7 +315,7 @@ export default function SettingsScreen({ navigation }) {
         content: {
           title: "Caddate Test Bildirimi",
           body: "Bildirim ayarlarınız çalışıyor! 🎉",
-          sound: soundEnabled,
+          sound: settings.soundEnabled ? true : false,
         },
         trigger: { seconds: 1 },
       });
@@ -238,62 +323,100 @@ export default function SettingsScreen({ navigation }) {
       Alert.alert('Başarılı', 'Test bildirimi gönderildi!');
     } catch (error) {
       console.error('Test notification error:', error);
-      Alert.alert('Hata', 'Test bildirimi gönderilemedi');
+      Alert.alert('Hata', 'Test bildirimi gönderilemedi: ' + error.message);
     }
   };
+
+  // Profil ayarlarına git
+  const goToProfileSettings = () => {
+    navigation.navigate('Profile');
+  };
+
+  // Gizlilik ayarlarını göster
+  const showPrivacySettings = () => {
+    Alert.alert(
+      'Gizlilik Ayarları',
+      'Profil görünürlüğü ve diğer gizlilik ayarlarını buradan yönetebilirsiniz.',
+      [
+        { text: 'İptal', style: 'cancel' },
+        { 
+          text: 'Ayarları Aç', 
+          onPress: () => {
+            // Gizlilik ayarları modal'ını aç
+            setShowPrivacyModal(true);
+          }
+        }
+      ]
+    );
+  };
+
+  // Güvenlik ayarlarını göster
+  const showSecuritySettings = () => {
+    navigation.navigate('Security');
+  };
+
+  // Abonelik planını göster
+  const showSubscriptionPlan = () => {
+    Alert.alert(
+      'Abonelik Planım',
+      'Şu anda ücretsiz plandasınız.\n\nPremium özellikler yakında eklenecek.',
+      [
+        { text: 'Tamam', style: 'default' }
+      ]
+    );
+  };
+
+  // Yardım ve destek
+  const showHelpSupport = () => {
+    Alert.alert(
+      'Yardım & Destek',
+      'Sorularınız için:\n\n📧 Email: destek@caddate.com\n\nYakında canlı destek eklenecek.',
+      [
+        { text: 'Tamam', style: 'default' }
+      ]
+    );
+  };
+
+  const [showPrivacyModal, setShowPrivacyModal] = useState(false);
 
   const menuItems = [
     {
       id: '1',
-      title: 'Profil Ayarları',
-      icon: 'person-outline',
-      color: colors.primary,
-      onPress: () => Alert.alert('Bilgi', 'Profil ayarları yakında eklenecek'),
-    },
-    {
-      id: '2',
       title: 'Abonelik Planım',
       icon: 'diamond-outline',
       color: colors.secondary,
-      onPress: () => Alert.alert('Bilgi', 'Abonelik planları yakında eklenecek'),
+      onPress: showSubscriptionPlan,
     },
     {
-      id: '3',
+      id: '2',
       title: 'Güvenlik',
       icon: 'shield-outline',
       color: colors.accent,
-      onPress: () => Alert.alert('Bilgi', 'Güvenlik ayarları yakında eklenecek'),
+      onPress: showSecuritySettings,
     },
     {
-      id: '4',
-      title: 'Gizlilik',
-      icon: 'lock-closed-outline',
-      color: colors.warning,
-      onPress: () => Alert.alert('Bilgi', 'Gizlilik ayarları yakında eklenecek'),
-    },
-    {
-      id: '5',
+      id: '3',
       title: 'Yardım & Destek',
       icon: 'help-circle-outline',
       color: colors.info,
-      onPress: () => Alert.alert('Bilgi', 'Yardım ve destek yakında eklenecek'),
+      onPress: showHelpSupport,
     },
     {
-      id: '6',
+      id: '4',
       title: 'Hakkında',
       icon: 'information-circle-outline',
       color: colors.primary,
       onPress: () => Alert.alert('Hakkında', 'Caddate v1.0.0\nBağdat Caddesi\'nin sosyal uygulaması'),
     },
     {
-      id: '7',
+      id: '5',
       title: 'Bildirim Testi',
       icon: 'notifications',
       color: colors.success,
       onPress: () => sendTestNotification(),
     },
     {
-      id: '8',
+      id: '6',
       title: 'Socket Durumu',
       icon: socketConnected ? 'wifi' : 'wifi-off',
       color: socketConnected ? colors.success : colors.warning,
@@ -312,9 +435,41 @@ export default function SettingsScreen({ navigation }) {
       </View>
       <Switch
         value={value}
-        onValueChange={onValueChange}
+        onValueChange={(newValue) => {
+          onValueChange(newValue);
+          // Otomatik kaydet - field mapping'i düzelt
+          const fieldMap = {
+            'Bildirimler': 'notifications',
+            'Profil Görünürlüğü': 'privacy',
+            'Online Durumu Göster': 'privacy',
+            'Mesaj Alma İzni': 'privacy',
+            'Konum Göster': 'privacy'
+          };
+          
+          const fieldName = fieldMap[title] || title.toLowerCase().replace(/\s+/g, '');
+          
+          if (fieldName === 'privacy') {
+            // Privacy ayarları için özel işlem
+            const privacyField = title === 'Profil Görünürlüğü' ? 'profileVisibility' :
+                                title === 'Online Durumu Göster' ? 'showOnlineStatus' :
+                                title === 'Mesaj Alma İzni' ? 'allowMessages' :
+                                title === 'Konum Göster' ? 'showLocation' : null;
+            
+            if (privacyField) {
+              saveSettings({
+                privacy: {
+                  ...settings.privacy,
+                  [privacyField]: newValue
+                }
+              });
+            }
+          } else {
+            saveSettings({ [fieldName]: newValue });
+          }
+        }}
         trackColor={{ false: colors.border.light, true: color }}
         thumbColor={value ? colors.text.primary : colors.text.primary}
+        disabled={isSaving}
       />
     </View>
   );
@@ -379,6 +534,14 @@ export default function SettingsScreen({ navigation }) {
             </View>
           </LinearGradient>
 
+          {/* Hata mesajı */}
+          {error && (
+            <View style={styles.errorContainer}>
+              <Ionicons name="warning" size={20} color={colors.warning} />
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          )}
+
           {/* Bildirim Ayarları */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Bildirim Ayarları</Text>
@@ -386,67 +549,74 @@ export default function SettingsScreen({ navigation }) {
             {renderSettingItem(
               'notifications',
               'Bildirimler',
-              notifications,
-              setNotifications,
+              settings.notifications,
+              (value) => setSettings({...settings, notifications: value}),
               colors.success
+            )}
+          </View>
+
+          {/* Gizlilik Ayarları */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Gizlilik Ayarları</Text>
+            
+            {renderSettingItem(
+              'eye',
+              'Profil Görünürlüğü',
+              settings.privacy.profileVisibility === 'public',
+              (value) => setSettings({
+                ...settings, 
+                privacy: {
+                  ...settings.privacy, 
+                  profileVisibility: value ? 'public' : 'private'
+                }
+              }),
+              colors.warning
             )}
 
             {renderSettingItem(
-              'mail',
-              'E-posta Bildirimleri',
-              emailNotifications,
-              setEmailNotifications,
+              'wifi',
+              'Online Durumu Göster',
+              settings.privacy.showOnlineStatus,
+              (value) => setSettings({
+                ...settings, 
+                privacy: {
+                  ...settings.privacy, 
+                  showOnlineStatus: value
+                }
+              }),
               colors.info
             )}
 
             {renderSettingItem(
-              'phone-portrait',
-              'Push Bildirimleri',
-              pushNotifications,
-              setPushNotifications,
-              colors.primary
-            )}
-
-            {renderSettingItem(
-              'volume-high',
-              'Ses',
-              soundEnabled,
-              setSoundEnabled,
-              colors.secondary
-            )}
-
-            {renderSettingItem(
-              'phone-portrait',
-              'Titreşim',
-              vibrationEnabled,
-              setVibrationEnabled,
+              'chatbubble',
+              'Mesaj Alma İzni',
+              settings.privacy.allowMessages,
+              (value) => setSettings({
+                ...settings, 
+                privacy: {
+                  ...settings.privacy, 
+                  allowMessages: value
+                }
+              }),
               colors.accent
             )}
-          </View>
 
-          {/* Konum Ayarları */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Konum Ayarları</Text>
-            
             {renderSettingItem(
               'location',
               'Konum Paylaşımı',
-              locationSharing,
-              setLocationSharing,
+              settings.privacy.showLocation,
+              (value) => {
+                const newSettings = {
+                  ...settings, 
+                  privacy: {
+                    ...settings.privacy, 
+                    showLocation: value
+                  }
+                };
+                setSettings(newSettings);
+                saveSettings(newSettings);
+              },
               colors.primary
-            )}
-          </View>
-
-          {/* Görünüm Ayarları */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Görünüm Ayarları</Text>
-            
-            {renderSettingItem(
-              'moon',
-              'Karanlık Mod',
-              darkMode,
-              setDarkMode,
-              colors.secondary
             )}
           </View>
 
@@ -588,5 +758,23 @@ const styles = StyleSheet.create({
   loadingText: {
     fontSize: scaleFont(18),
     color: colors.text.secondary,
+  },
+  errorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.warning + '20',
+    paddingHorizontal: getResponsivePadding(15),
+    paddingVertical: verticalScale(12),
+    marginHorizontal: getResponsivePadding(20),
+    marginTop: verticalScale(20),
+    borderRadius: scale(8),
+    borderWidth: 1,
+    borderColor: colors.warning + '40',
+  },
+  errorText: {
+    fontSize: scaleFont(14),
+    color: colors.warning,
+    marginLeft: scale(8),
+    flex: 1,
   },
 });

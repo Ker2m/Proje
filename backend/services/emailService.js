@@ -9,13 +9,16 @@ class EmailService {
   // SMTP yapılandırması
   configure(config) {
     try {
-      this.transporter = nodemailer.createTransporter({
+      this.transporter = nodemailer.createTransport({
         host: config.host,
         port: config.port,
         secure: config.secure || false, // true for 465, false for other ports
         auth: {
           user: config.user,
           pass: config.pass
+        },
+        tls: {
+          rejectUnauthorized: false // Self-signed certificate için
         }
       });
 

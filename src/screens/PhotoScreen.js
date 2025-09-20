@@ -11,6 +11,8 @@ import {
   Dimensions,
   Platform,
   StatusBar,
+  ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,40 +36,111 @@ import {
   getGridColumns
 } from '../utils/responsive';
 import { colors } from '../constants/colors';
+import apiService from '../services/api';
+import socketService from '../services/socketService';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
 export default function PhotoScreen() {
-  const [photos, setPhotos] = useState([
-    {
-      id: '1',
-      uri: 'https://picsum.photos/300/400?random=1',
-      user: 'Ahmet Y.',
-      time: '2 saat önce',
-      likes: 12,
-      comments: 3,
-      location: 'Bağdat Caddesi',
-    },
-    {
-      id: '2',
-      uri: 'https://picsum.photos/300/400?random=2',
-      user: 'Elif K.',
-      time: '4 saat önce',
-      likes: 8,
-      comments: 1,
-      location: 'Moda Sahili',
-    },
-    {
-      id: '3',
-      uri: 'https://picsum.photos/300/400?random=3',
-      user: 'Mehmet A.',
-      time: '6 saat önce',
-      likes: 15,
-      comments: 5,
-      location: 'Kadıköy',
-    },
-  ]);
-  const [selectedTab, setSelectedTab] = useState('feed');
+  const [photos, setPhotos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState(null);
+
+  // Component mount olduğunda fotoğrafları yükle
+  useEffect(() => {
+    loadPhotos();
+    setupSocketListeners();
+    loadCurrentUser();
+    
+    return () => {
+      // Cleanup socket listeners
+      socketService.off('new_photo', handleNewPhoto);
+      socketService.off('photo_like_updated', handlePhotoLikeUpdated);
+    };
+  }, []);
+
+  // Tab değiştiğinde fotoğrafları yeniden yükle - artık sadece feed var
+  useEffect(() => {
+    loadPhotos();
+  }, []);
+
+  // Socket event listeners
+  const setupSocketListeners = () => {
+    socketService.on('new_photo', handleNewPhoto);
+    socketService.on('photo_like_updated', handlePhotoLikeUpdated);
+  };
+
+  // Yeni fotoğraf geldiğinde
+  const handleNewPhoto = (data) => {
+    console.log('New photo received:', data);
+    // Yeni fotoğrafı yükle
+    loadPhotos();
+  };
+
+  // Fotoğraf beğenisi güncellendiğinde
+  const handlePhotoLikeUpdated = (data) => {
+    console.log('Photo like updated:', data);
+    setPhotos(prevPhotos => 
+      prevPhotos.map(photo => 
+        photo.id === data.photoId 
+          ? { ...photo, likes: data.liked ? photo.likes + 1 : Math.max(0, photo.likes - 1) }
+          : photo
+      )
+    );
+  };
+
+  // Fotoğrafları yükle
+  const loadPhotos = async () => {
+    try {
+      setLoading(true);
+      const endpoint = '/photos/feed';
+      const response = await apiService.get(endpoint);
+      
+      if (response.success) {
+        setPhotos(response.data.photos || []);
+      } else {
+        Alert.alert('Hata', 'Fotoğraflar yüklenirken bir hata oluştu');
+      }
+    } catch (error) {
+      console.error('Load photos error:', error);
+      Alert.alert('Hata', 'Fotoğraflar yüklenirken bir hata oluştu');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Pull to refresh
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadPhotos();
+    setRefreshing(false);
+  };
+
+  // Mevcut kullanıcı bilgisini yükle
+  const loadCurrentUser = async () => {
+    try {
+      const response = await apiService.getProfile();
+      if (response.success) {
+        setCurrentUserId(response.data.user.id);
+        console.log('Current user ID loaded:', response.data.user.id);
+      }
+    } catch (error) {
+      console.error('Load current user error:', error);
+      // Fallback olarak token'dan user ID'yi al
+      try {
+        const token = await apiService.getStoredToken();
+        if (token) {
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          setCurrentUserId(payload.userId);
+          console.log('Current user ID from token:', payload.userId);
+        }
+      } catch (tokenError) {
+        console.error('Token parse error:', tokenError);
+      }
+    }
+  };
 
   const pickImage = async () => {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -85,16 +158,7 @@ export default function PhotoScreen() {
     });
 
     if (!result.canceled) {
-      const newPhoto = {
-        id: Date.now().toString(),
-        uri: result.assets[0].uri,
-        user: 'Sen',
-        time: 'Şimdi',
-        likes: 0,
-        comments: 0,
-        location: 'Bağdat Caddesi',
-      };
-      setPhotos(prev => [newPhoto, ...prev]);
+      await uploadPhoto(result.assets[0].uri);
     }
   };
 
@@ -113,16 +177,98 @@ export default function PhotoScreen() {
     });
 
     if (!result.canceled) {
-      const newPhoto = {
-        id: Date.now().toString(),
-        uri: result.assets[0].uri,
-        user: 'Sen',
-        time: 'Şimdi',
-        likes: 0,
-        comments: 0,
-        location: 'Bağdat Caddesi',
-      };
-      setPhotos(prev => [newPhoto, ...prev]);
+      await uploadPhoto(result.assets[0].uri);
+    }
+  };
+
+  // Fotoğraf yükleme fonksiyonu
+  const uploadPhoto = async (uri) => {
+    try {
+      setUploading(true);
+      
+      const formData = new FormData();
+      formData.append('photo', {
+        uri: uri,
+        type: 'image/jpeg',
+        name: 'photo.jpg',
+      });
+      formData.append('caption', '');
+
+      const response = await apiService.post('/photos/upload', formData);
+
+      if (response.success) {
+        // Socket ile yeni fotoğrafı bildir
+        socketService.emit('photo_shared', {
+          photoId: response.data.photo.id,
+          timestamp: new Date().toISOString()
+        });
+        
+        // Fotoğraf yükleme için aktivite oluştur
+        socketService.createActivity(
+          'photo',
+          'Fotoğraf paylaşıldı',
+          'Yeni fotoğraf paylaştınız',
+          { 
+            photoId: response.data.photo.id,
+            hasCaption: false,
+            captionLength: 0
+          }
+        );
+        
+        // Fotoğrafları yeniden yükle
+        await loadPhotos();
+        
+        Alert.alert('Başarılı', 'Fotoğraf başarıyla yüklendi');
+      } else {
+        Alert.alert('Hata', 'Fotoğraf yüklenirken bir hata oluştu');
+      }
+    } catch (error) {
+      console.error('Upload photo error:', error);
+      Alert.alert('Hata', 'Fotoğraf yüklenirken bir hata oluştu');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Fotoğraf beğenme fonksiyonu
+  const likePhoto = async (photoId) => {
+    try {
+      const response = await apiService.post(`/photos/${photoId}/like`);
+      
+      if (response.success) {
+        // Socket ile beğeniyi bildir
+        socketService.emit('photo_liked', {
+          photoId: photoId,
+          liked: response.liked,
+          timestamp: new Date().toISOString()
+        });
+        
+        // Fotoğraf beğenme için aktivite oluştur
+        if (response.liked) {
+          socketService.createActivity(
+            'like',
+            'Fotoğraf beğenildi',
+            'Bir fotoğrafı beğendiniz',
+            { photoId: photoId, action: 'liked' }
+          );
+        }
+        
+        // Local state'i güncelle
+        setPhotos(prevPhotos => 
+          prevPhotos.map(photo => 
+            photo.id === photoId 
+              ? { 
+                  ...photo, 
+                  likes: response.liked ? photo.likes + 1 : Math.max(0, photo.likes - 1),
+                  isLiked: response.liked
+                }
+              : photo
+          )
+        );
+      }
+    } catch (error) {
+      console.error('Like photo error:', error);
+      Alert.alert('Hata', 'Beğeni işlemi sırasında bir hata oluştu');
     }
   };
 
@@ -138,48 +284,131 @@ export default function PhotoScreen() {
     );
   };
 
-  const renderPhoto = ({ item }) => (
-    <View style={styles.photoCard}>
-      <Image source={{ uri: item.uri }} style={styles.photo} />
-      <View style={styles.photoOverlay}>
-        <View style={styles.photoHeader}>
-          <View style={styles.userInfo}>
-            <View style={styles.avatar}>
-              <Ionicons name="person" size={scale(16)} color="#FFFFFF" />
+
+  const showPhotoOptions = (photo) => {
+    console.log('Photo options for:', photo);
+    console.log('Current user ID:', currentUserId);
+    console.log('Photo user ID:', photo.user_id);
+    console.log('Photo user name:', photo.user);
+    
+    // Sadece kendi fotoğraflarında sil seçeneği göster
+    const isMyPhoto = photo.user_id === currentUserId;
+    
+    console.log('Is my photo:', isMyPhoto);
+    
+    const options = [];
+    
+    if (isMyPhoto) {
+      options.push(
+        { text: 'Sil', onPress: () => deletePhoto(photo), style: 'destructive' }
+      );
+    } else {
+      options.push(
+        { text: 'Bilgi', onPress: () => Alert.alert('Bilgi', 'Bu fotoğrafı silemezsiniz') }
+      );
+    }
+    
+    options.push({ text: 'İptal', style: 'cancel' });
+    
+    Alert.alert(
+      'Fotoğraf Seçenekleri',
+      'Ne yapmak istiyorsunuz?',
+      options
+    );
+  };
+
+
+  const deletePhoto = async (photo) => {
+    Alert.alert(
+      'Fotoğrafı Sil',
+      'Bu fotoğrafı silmek istediğinizden emin misiniz?',
+      [
+        { text: 'İptal', style: 'cancel' },
+        { 
+          text: 'Sil', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const response = await apiService.delete(`/photos/${photo.id}`);
+              if (response.success) {
+                Alert.alert('Başarılı', 'Fotoğraf silindi');
+                await loadPhotos(); // Fotoğrafları yeniden yükle
+              } else {
+                Alert.alert('Hata', 'Fotoğraf silinirken bir hata oluştu');
+              }
+            } catch (error) {
+              console.error('Delete photo error:', error);
+              Alert.alert('Hata', 'Fotoğraf silinirken bir hata oluştu');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const renderPhoto = ({ item }) => {
+    return (
+      <View style={styles.photoCard}>
+        <Image source={{ uri: item.uri }} style={styles.photo} />
+        <View style={styles.photoOverlay}>
+          <View style={styles.photoHeader}>
+            <View style={styles.userInfo}>
+              <View style={styles.avatar}>
+                {item.profile_picture ? (
+                  <Image source={{ uri: item.profile_picture }} style={styles.avatarImage} />
+                ) : (
+                  <Ionicons name="person" size={scale(16)} color="#FFFFFF" />
+                )}
+              </View>
+              <View style={styles.userDetails}>
+                <Text style={styles.userName}>{item.user}</Text>
+                <Text style={styles.photoTime}>{item.time}</Text>
+              </View>
             </View>
-            <View>
-              <Text style={styles.userName}>{item.user}</Text>
-              <Text style={styles.photoTime}>{item.time}</Text>
-            </View>
-          </View>
-          <TouchableOpacity style={styles.moreButton}>
-            <Ionicons name="ellipsis-horizontal" size={scale(20)} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
-        
-        <View style={styles.photoFooter}>
-          <View style={styles.locationContainer}>
-            <Ionicons name="location" size={scale(16)} color="#FFFFFF" />
-            <Text style={styles.locationText}>{item.location}</Text>
+            <TouchableOpacity 
+              style={styles.moreButton}
+              onPress={() => showPhotoOptions(item)}
+            >
+              <Ionicons name="ellipsis-horizontal" size={scale(20)} color="#FFFFFF" />
+            </TouchableOpacity>
           </View>
           
-          <View style={styles.actions}>
-            <TouchableOpacity style={styles.actionButton}>
-              <Ionicons name="heart" size={scale(20)} color="#FFFFFF" />
-              <Text style={styles.actionText}>{item.likes}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton}>
-              <Ionicons name="chatbubble" size={scale(20)} color="#FFFFFF" />
-              <Text style={styles.actionText}>{item.comments}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton}>
-              <Ionicons name="share" size={scale(20)} color="#FFFFFF" />
-            </TouchableOpacity>
+          <View style={styles.photoFooter}>
+            <View style={styles.locationContainer}>
+              <Ionicons name="location" size={scale(14)} color="#FFFFFF" />
+              <Text style={styles.locationText} numberOfLines={1}>{item.location}</Text>
+            </View>
+            
+            <View style={styles.actions}>
+              <TouchableOpacity 
+                style={[styles.actionButton, item.isLiked && styles.likedButton]}
+                onPress={() => likePhoto(item.id)}
+                activeOpacity={0.7}
+              >
+                <Ionicons 
+                  name={item.isLiked ? "heart" : "heart-outline"} 
+                  size={scale(18)} 
+                  color={item.isLiked ? "#FF6B6B" : "#FFFFFF"} 
+                />
+                <Text style={[styles.actionText, item.isLiked && styles.likedText]}>
+                  {item.likes || 0}
+                </Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.actionButton} activeOpacity={0.7}>
+                <Ionicons name="chatbubble-outline" size={scale(18)} color="#FFFFFF" />
+                <Text style={styles.actionText}>{item.comments || 0}</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.actionButton} activeOpacity={0.7}>
+                <Ionicons name="share-outline" size={scale(18)} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -200,48 +429,68 @@ export default function PhotoScreen() {
           </TouchableOpacity>
         </LinearGradient>
 
-        {/* Tab Bar */}
-        <View style={styles.tabContainer}>
-          <TouchableOpacity
-            style={[styles.tab, selectedTab === 'feed' && styles.activeTab]}
-            onPress={() => setSelectedTab('feed')}
-          >
-            <Text style={[styles.tabText, selectedTab === 'feed' && styles.activeTabText]}>
-              Akış
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tab, selectedTab === 'nearby' && styles.activeTab]}
-            onPress={() => setSelectedTab('nearby')}
-          >
-            <Text style={[styles.tabText, selectedTab === 'nearby' && styles.activeTabText]}>
-              Yakındakiler
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tab, selectedTab === 'my' && styles.activeTab]}
-            onPress={() => setSelectedTab('my')}
-          >
-            <Text style={[styles.tabText, selectedTab === 'my' && styles.activeTabText]}>
-              Benimkiler
-            </Text>
-          </TouchableOpacity>
-        </View>
 
         {/* Content */}
-        <FlatList
-          data={photos}
-          renderItem={renderPhoto}
-          keyExtractor={item => item.id}
-          numColumns={2}
-          contentContainerStyle={styles.photosGrid}
-          showsVerticalScrollIndicator={false}
-        />
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Fotoğraflar yükleniyor...</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={photos}
+            renderItem={renderPhoto}
+            keyExtractor={item => item.id.toString()}
+            numColumns={2}
+            contentContainerStyle={styles.photosGrid}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+                title="Yenileniyor..."
+                titleColor={colors.text.secondary}
+              />
+            }
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <View style={styles.emptyIconContainer}>
+                  <Ionicons name="camera-outline" size={scale(80)} color={colors.text.secondary} />
+                </View>
+                <Text style={styles.emptyText}>
+                  Henüz fotoğraf paylaşılmamış
+                </Text>
+                <Text style={styles.emptySubText}>
+                  İlk fotoğrafı siz paylaşarak başlayın! 📸
+                </Text>
+                <TouchableOpacity 
+                  style={styles.emptyActionButton}
+                  onPress={showImageOptions}
+                >
+                  <Ionicons name="camera" size={scale(20)} color="#FFFFFF" />
+                  <Text style={styles.emptyActionText}>Fotoğraf Paylaş</Text>
+                </TouchableOpacity>
+              </View>
+            }
+          />
+        )}
 
         {/* Floating Action Button */}
-        <TouchableOpacity style={styles.fab} onPress={showImageOptions}>
-          <Ionicons name="camera" size={scale(24)} color="#FFFFFF" />
+        <TouchableOpacity 
+          style={[styles.fab, uploading && styles.fabDisabled]} 
+          onPress={showImageOptions}
+          disabled={uploading}
+        >
+          {uploading ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <Ionicons name="camera" size={scale(24)} color="#FFFFFF" />
+          )}
         </TouchableOpacity>
+
+
       </SafeAreaView>
     </View>
   );
@@ -281,52 +530,23 @@ const styles = StyleSheet.create({
     minHeight: getMinTouchTarget(),
     ...getPlatformShadow(2),
   },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: colors.surface,
-    paddingHorizontal: getResponsivePadding(20),
-    paddingVertical: verticalScale(10),
-    borderBottomWidth: isIOS ? 0.5 : 1,
-    borderBottomColor: colors.border.light,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: verticalScale(12),
-    alignItems: 'center',
-    borderRadius: scale(20),
-    marginHorizontal: scale(2),
-  },
-  activeTab: {
-    backgroundColor: colors.primary,
-    ...getPlatformShadow(2),
-  },
-  tabText: {
-    fontSize: getResponsiveFontSize(14),
-    fontWeight: isIOS ? '600' : '500',
-    color: colors.text.secondary,
-    fontFamily: isIOS ? 'System' : 'Roboto',
-  },
-  activeTabText: {
-    color: colors.text.primary,
-    fontWeight: isIOS ? '700' : 'bold',
-  },
   photosGrid: {
-    padding: scale(10),
+    padding: scale(8),
     paddingBottom: getBottomSafeArea() + verticalScale(100),
   },
   photoCard: {
     flex: 1,
-    margin: scale(5),
-    borderRadius: scale(15),
+    margin: scale(4),
+    borderRadius: scale(20),
     overflow: 'hidden',
     backgroundColor: colors.surface,
-    ...getPlatformShadow(3),
-    borderWidth: isIOS ? 0.5 : 1,
-    borderColor: colors.border.light,
+    ...getPlatformShadow(4),
+    borderWidth: 0,
+    elevation: 6,
   },
   photo: {
     width: '100%',
-    height: verticalScale(isTablet ? 250 : 200),
+    height: verticalScale(isTablet ? 280 : 220),
     resizeMode: 'cover',
   },
   photoOverlay: {
@@ -335,9 +555,9 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: colors.overlayLight,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
     justifyContent: 'space-between',
-    padding: scale(15),
+    padding: scale(12),
   },
   photoHeader: {
     flexDirection: 'row',
@@ -347,27 +567,37 @@ const styles = StyleSheet.create({
   userInfo: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
   },
   avatar: {
-    width: scale(isTablet ? 36 : 30),
-    height: scale(isTablet ? 36 : 30),
-    borderRadius: scale(isTablet ? 18 : 15),
-    backgroundColor: 'rgba(220, 38, 38, 0.3)',
+    width: scale(isTablet ? 40 : 32),
+    height: scale(isTablet ? 40 : 32),
+    borderRadius: scale(isTablet ? 20 : 16),
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: scale(10),
-    ...getPlatformShadow(1),
+    marginRight: scale(8),
+    ...getPlatformShadow(2),
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  userDetails: {
+    flex: 1,
   },
   userName: {
-    fontSize: getResponsiveFontSize(14),
-    fontWeight: isIOS ? '600' : '500',
-    color: colors.text.primary,
+    fontSize: getResponsiveFontSize(15),
+    fontWeight: isIOS ? '700' : 'bold',
+    color: '#FFFFFF',
     fontFamily: isIOS ? 'System' : 'Roboto',
+    textShadowColor: 'rgba(0, 0, 0, 0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
   photoTime: {
     fontSize: getResponsiveFontSize(12),
-    color: colors.text.secondary,
+    color: 'rgba(255, 255, 255, 0.8)',
     fontFamily: isIOS ? 'System' : 'Roboto',
+    marginTop: scale(2),
   },
   moreButton: {
     padding: scale(5),
@@ -379,18 +609,22 @@ const styles = StyleSheet.create({
   photoFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-end',
   },
   locationContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    marginRight: scale(8),
   },
   locationText: {
-    fontSize: getResponsiveFontSize(12),
-    color: colors.text.primary,
-    marginLeft: scale(5),
+    fontSize: getResponsiveFontSize(11),
+    color: 'rgba(255, 255, 255, 0.9)',
+    marginLeft: scale(4),
     fontFamily: isIOS ? 'System' : 'Roboto',
+    textShadowColor: 'rgba(0, 0, 0, 0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 1,
   },
   actions: {
     flexDirection: 'row',
@@ -399,17 +633,29 @@ const styles = StyleSheet.create({
   actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginLeft: scale(15),
-    padding: scale(5),
+    marginLeft: scale(12),
+    padding: scale(6),
     minWidth: getMinTouchTarget(),
     minHeight: getMinTouchTarget(),
     justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    borderRadius: scale(15),
+  },
+  likedButton: {
+    backgroundColor: 'rgba(255, 107, 107, 0.2)',
   },
   actionText: {
     fontSize: getResponsiveFontSize(12),
-    color: colors.text.primary,
-    marginLeft: scale(5),
+    color: '#FFFFFF',
+    marginLeft: scale(4),
     fontFamily: isIOS ? 'System' : 'Roboto',
+    fontWeight: isIOS ? '600' : '500',
+    textShadowColor: 'rgba(0, 0, 0, 0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 1,
+  },
+  likedText: {
+    color: '#FF6B6B',
   },
   fab: {
     position: 'absolute',
@@ -422,5 +668,74 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     ...getPlatformShadow(4),
+  },
+  fabDisabled: {
+    backgroundColor: colors.text.secondary,
+    opacity: 0.6,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: verticalScale(50),
+  },
+  loadingText: {
+    fontSize: getResponsiveFontSize(16),
+    color: colors.text.secondary,
+    marginTop: verticalScale(10),
+    fontFamily: isIOS ? 'System' : 'Roboto',
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: verticalScale(80),
+    paddingHorizontal: getResponsivePadding(40),
+  },
+  emptyIconContainer: {
+    width: scale(120),
+    height: scale(120),
+    borderRadius: scale(60),
+    backgroundColor: 'rgba(220, 38, 38, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: verticalScale(20),
+  },
+  emptyText: {
+    fontSize: getResponsiveFontSize(20),
+    fontWeight: isIOS ? '700' : 'bold',
+    color: colors.text.primary,
+    textAlign: 'center',
+    marginBottom: verticalScale(8),
+    fontFamily: isIOS ? 'System' : 'Roboto',
+  },
+  emptySubText: {
+    fontSize: getResponsiveFontSize(16),
+    color: colors.text.secondary,
+    textAlign: 'center',
+    marginBottom: verticalScale(30),
+    fontFamily: isIOS ? 'System' : 'Roboto',
+    lineHeight: getResponsiveFontSize(22),
+  },
+  emptyActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    paddingHorizontal: scale(24),
+    paddingVertical: verticalScale(12),
+    borderRadius: scale(25),
+    ...getPlatformShadow(3),
+  },
+  emptyActionText: {
+    color: '#FFFFFF',
+    fontSize: getResponsiveFontSize(16),
+    fontWeight: isIOS ? '600' : '500',
+    marginLeft: scale(8),
+    fontFamily: isIOS ? 'System' : 'Roboto',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: scale(isTablet ? 18 : 15),
   },
 });

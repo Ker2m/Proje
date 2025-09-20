@@ -10,9 +10,13 @@ const {
   uploadProfilePicture,
   upload,
   searchUsers,
+  getNearbyUsers,
+  getProfileOptions,
+  updateAdvancedProfile,
   getFriends,
   addFriend,
-  removeFriend
+  removeFriend,
+  getUserStats
 } = require('../controllers/userController');
 const { authenticateToken } = require('../middleware/auth');
 
@@ -45,6 +49,15 @@ router.post('/profile-picture', upload.single('profile_picture'), uploadProfileP
 // GET /api/users/search - Kullanıcı ara
 router.get('/search', searchUsers);
 
+// GET /api/users/nearby - Yakındaki kullanıcıları bul
+router.get('/nearby', getNearbyUsers);
+
+// GET /api/users/profile-options - Profil seçeneklerini getir
+router.get('/profile-options', getProfileOptions);
+
+// PUT /api/users/advanced-profile - Gelişmiş profil güncelle
+router.put('/advanced-profile', updateAdvancedProfile);
+
 // GET /api/users/friends - Arkadaş listesi getir
 router.get('/friends', getFriends);
 
@@ -53,6 +66,9 @@ router.post('/friends', addFriend);
 
 // DELETE /api/users/friends/:friend_id - Arkadaş çıkar
 router.delete('/friends/:friend_id', removeFriend);
+
+// GET /api/users/stats - Kullanıcı istatistiklerini getir
+router.get('/stats', getUserStats);
 
 // GET /api/users/:id - Belirli kullanıcının profilini getir
 router.get('/:id', getUserById);

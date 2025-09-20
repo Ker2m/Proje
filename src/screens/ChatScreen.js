@@ -34,61 +34,39 @@ import apiService from '../services/api';
 export default function ChatScreen() {
   const [activeTab, setActiveTab] = useState('public');
   const [message, setMessage] = useState('');
-  const [isConnected, setIsConnected] = useState(false);
-  const [onlineUsers, setOnlineUsers] = useState([]);
   const [publicMessages, setPublicMessages] = useState([]);
 
   // Socket.io bağlantısını yönet
   useEffect(() => {
+    console.log('ChatScreen: Socket bağlantısı başlatılıyor...');
+    
     // Socket bağlantısını başlat
     socketService.connect();
 
-    // Bağlantı durumunu kontrol et
-    const checkConnection = () => {
-      const connected = socketService.isSocketConnected();
-      setIsConnected(connected);
-      if (connected) {
-        console.log('Socket bağlantısı kuruldu');
-        // Genel odaya katıl
-        socketService.joinRoom('general');
-        // Kullanıcı durumunu online olarak güncelle
-        socketService.updateUserStatus('online');
-      } else {
-        console.log('Socket bağlantısı yok');
-        // Kullanıcı durumunu offline olarak güncelle
-        socketService.updateUserStatus('offline');
-      }
-    };
-
-    // İlk kontrol
-    checkConnection();
-
-    // Bağlantı durumunu periyodik olarak kontrol et
-    const connectionInterval = setInterval(checkConnection, 1000);
+    // Socket bağlantısını kontrol et ve odaya katıl
+    const connected = socketService.isSocketConnected();
+    if (connected) {
+      console.log('ChatScreen: Socket bağlantısı kuruldu');
+      // Genel odaya katıl
+      socketService.joinRoom('general');
+      // Kullanıcı durumunu online olarak güncelle
+      socketService.updateUserStatus('online');
+    } else {
+      console.log('ChatScreen: Socket bağlantısı yok');
+      // Kullanıcı durumunu offline olarak güncelle
+      socketService.updateUserStatus('offline');
+    }
 
     // Event listener'ları ekle
-    const handleConnectionStatus = (data) => {
-      setIsConnected(data.connected);
-      if (data.connected) {
-        console.log('Socket bağlantısı kuruldu');
-        // Genel odaya katıl
-        socketService.joinRoom('general');
-        // Kullanıcı durumunu online olarak güncelle
-        socketService.updateUserStatus('online');
-      } else {
-        console.log('Socket bağlantısı kesildi:', data.reason);
-        // Kullanıcı durumunu offline olarak güncelle
-        socketService.updateUserStatus('offline');
-      }
-    };
 
     const handleMessageReceived = (data) => {
-      console.log('Yeni mesaj alındı:', data);
+      console.log('ChatScreen: Yeni mesaj alındı:', data);
+      console.log('ChatScreen: Mesaj gönderen ID:', data.senderId);
       
-      // Kendi mesajımızı tekrar eklemeyi önle
-      if (data.senderId === socketService.getSocketId()) {
-        return;
-      }
+      // Kendi mesajımızı tekrar eklemeyi önle - SORUN ÇÖZÜLDÜ
+      // Backend'de senderId olarak userId gönderiliyor, socketId değil
+      // Bu yüzden filtreleme mantığını kaldırdık - tüm mesajları kabul ediyoruz
+      // Optimistic update zaten kendi mesajımızı ekliyor, duplicate kontrolü var
       
       const newMessage = {
         id: `${data.senderId}-${data.timestamp}`,
@@ -103,36 +81,20 @@ export default function ChatScreen() {
         isOwn: false,
       };
       
+      console.log('ChatScreen: Yeni mesaj oluşturuldu:', newMessage);
+      
       setPublicMessages(prev => {
         // Duplicate mesajları kontrol et
         const exists = prev.some(msg => msg.id === newMessage.id);
         if (exists) {
+          console.log('ChatScreen: Mesaj zaten mevcut, eklenmiyor');
           return prev;
         }
+        console.log('ChatScreen: Mesaj listeye ekleniyor');
         return [...prev, newMessage];
       });
     };
 
-    const handleUserJoined = (data) => {
-      console.log('Kullanıcı katıldı:', data);
-      setOnlineUsers(prev => {
-        const exists = prev.some(user => user.userId === data.userId);
-        if (!exists) {
-          return [...prev, {
-            userId: data.userId,
-            userEmail: data.userEmail,
-            socketId: data.socketId,
-            joinedAt: new Date().toISOString()
-          }];
-        }
-        return prev;
-      });
-    };
-
-    const handleUserLeft = (data) => {
-      console.log('Kullanıcı ayrıldı:', data);
-      setOnlineUsers(prev => prev.filter(user => user.userId !== data.userId));
-    };
 
     const handleConnectionError = (error) => {
       console.error('Socket bağlantı hatası:', error);
@@ -140,19 +102,12 @@ export default function ChatScreen() {
     };
 
     // Event listener'ları kaydet
-    socketService.on('connection_status', handleConnectionStatus);
     socketService.on('message_received', handleMessageReceived);
-    socketService.on('user_joined', handleUserJoined);
-    socketService.on('user_left', handleUserLeft);
     socketService.on('connection_error', handleConnectionError);
 
     // Cleanup function
     return () => {
-      clearInterval(connectionInterval);
-      socketService.off('connection_status', handleConnectionStatus);
       socketService.off('message_received', handleMessageReceived);
-      socketService.off('user_joined', handleUserJoined);
-      socketService.off('user_left', handleUserLeft);
       socketService.off('connection_error', handleConnectionError);
     };
   }, []);
@@ -172,16 +127,9 @@ export default function ChatScreen() {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Online kullanıcıları arkadaş listesine ekle
+  // Arkadaş listesini döndür
   const getFriendsWithOnlineStatus = () => {
-    return friends.map(friend => {
-      const isOnline = onlineUsers.some(user => user.userId === friend.id);
-      return {
-        ...friend,
-        status: isOnline ? 'online' : friend.status,
-        lastSeen: isOnline ? 'Şimdi' : friend.lastSeen
-      };
-    });
+    return friends;
   };
 
   // Arkadaş arama fonksiyonu
@@ -408,30 +356,15 @@ export default function ChatScreen() {
   const sendMessage = () => {
     if (message.trim()) {
       const messageText = message.trim();
+      console.log('ChatScreen: Mesaj gönderiliyor:', messageText);
       
       // Socket.io ile mesaj gönder
-      if (isConnected) {
-        const sentMessage = socketService.sendMessage(messageText, 'general');
-        if (sentMessage) {
-          // Kendi mesajınızı hemen ekleyin (optimistic update)
-          const newMessage = {
-            id: Date.now().toString(),
-            user: 'Sen',
-            message: messageText,
-            time: new Date().toLocaleTimeString('tr-TR', { 
-              hour: '2-digit', 
-              minute: '2-digit' 
-            }),
-            avatar: '👤',
-            senderId: socketService.getSocketId(),
-            isOwn: true, // Kendi mesajımızı işaretle
-          };
-          setPublicMessages(prev => [...prev, newMessage]);
-        } else {
-          Alert.alert('Hata', 'Mesaj gönderilemedi. Lütfen tekrar deneyin.');
-        }
-      } else {
-        // Socket bağlı değilse sadece yerel olarak ekle
+      console.log('ChatScreen: Socket ile mesaj gönderiliyor...');
+      const sentMessage = socketService.sendMessage(messageText, 'general');
+      console.log('ChatScreen: Mesaj gönderme sonucu:', sentMessage);
+      
+      if (sentMessage) {
+        // Kendi mesajınızı hemen ekleyin (optimistic update)
         const newMessage = {
           id: Date.now().toString(),
           user: 'Sen',
@@ -441,11 +374,23 @@ export default function ChatScreen() {
             minute: '2-digit' 
           }),
           avatar: '👤',
-          senderId: 'local',
-          isOwn: true,
+          senderId: socketService.getSocketId(),
+          isOwn: true, // Kendi mesajımızı işaretle
         };
         setPublicMessages(prev => [...prev, newMessage]);
-        Alert.alert('Bağlantı Yok', 'Mesajınız gönderilemedi. Lütfen internet bağlantınızı kontrol edin.');
+        
+        // Mesaj gönderimi için aktivite oluştur
+        socketService.createActivity(
+          'message',
+          'Mesaj gönderildi',
+          `Genel sohbete mesaj gönderdiniz: "${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}"`,
+          { messageLength: messageText.length, room: 'general' }
+        );
+        
+        console.log('ChatScreen: Mesaj yerel olarak eklendi');
+      } else {
+        console.log('ChatScreen: Mesaj gönderilemedi');
+        Alert.alert('Hata', 'Mesaj gönderilemedi. Lütfen tekrar deneyin.');
       }
       
       setMessage('');
@@ -466,15 +411,6 @@ export default function ChatScreen() {
         >
           <View style={styles.headerTop}>
             <Text style={styles.headerTitle}>Sohbet</Text>
-            <View style={styles.connectionStatus}>
-              <View style={[
-                styles.statusDot,
-                { backgroundColor: isConnected ? colors.success : colors.error }
-              ]} />
-              <Text style={styles.statusText}>
-                {isConnected ? `Bağlı (${onlineUsers.length + 1} online)` : 'Bağlantı Yok'}
-              </Text>
-            </View>
           </View>
           <View style={styles.tabContainer}>
             <TouchableOpacity
@@ -697,21 +633,6 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
     color: colors.text.light,
-  },
-  connectionStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  statusText: {
-    fontSize: 12,
-    color: colors.text.light,
-    fontWeight: '500',
   },
   tabContainer: {
     flexDirection: 'row',

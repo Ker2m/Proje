@@ -66,7 +66,54 @@ export default function LoginScreen({ navigation, onAuthentication }) {
       }
     } catch (error) {
       console.error('Login error:', error);
-      Alert.alert('Hata', error.message || 'Giriş yapılırken bir hata oluştu');
+      
+      // Email doğrulama hatası kontrolü
+      if (error.message && error.message.includes('Email adresinizi doğrulamanız gerekiyor')) {
+        Alert.alert(
+          'Email Doğrulama Gerekli',
+          'Giriş yapabilmek için email adresinizi doğrulamanız gerekiyor. Doğrulama kodu göndermek ister misiniz?',
+          [
+            { text: 'İptal', style: 'cancel' },
+            { 
+              text: 'Kodu Gönder', 
+              onPress: () => handleResendVerificationEmail() 
+            }
+          ]
+        );
+      } else {
+        Alert.alert('Hata', error.message || 'Giriş yapılırken bir hata oluştu');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResendVerificationEmail = async () => {
+    if (!email) {
+      Alert.alert('Hata', 'Lütfen email adresinizi giriniz');
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      const response = await apiService.sendVerificationCode(email, 'registration');
+      
+      if (response.success) {
+        Alert.alert(
+          'Doğrulama Kodu Gönderildi',
+          `Email adresinize (${email}) doğrulama kodu gönderildi. Lütfen email kutunuzu kontrol edin.`,
+          [
+            { text: 'Tamam', onPress: () => {
+              // Email doğrulama ekranına yönlendir
+              console.log('Navigating to EmailVerification with email:', email);
+              navigation.navigate('EmailVerification', { email });
+            }}
+          ]
+        );
+      }
+    } catch (error) {
+      console.error('Resend verification error:', error);
+      Alert.alert('Hata', error.message || 'Doğrulama kodu gönderilirken bir hata oluştu');
     } finally {
       setIsLoading(false);
     }

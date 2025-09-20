@@ -1,7 +1,18 @@
 const User = require('../models/User');
+const { pool } = require('../config/database');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const {
+  INTERESTS,
+  PERSONALITY_TRAITS,
+  LANGUAGES,
+  RELATIONSHIP_STATUS,
+  LOOKING_FOR,
+  LIFESTYLE_PREFERENCES,
+  OCCUPATIONS,
+  EDUCATION_LEVELS
+} = require('../constants/profileOptions');
 
 // Multer konfigürasyonu
 const storage = multer.diskStorage({
@@ -74,7 +85,7 @@ const updateProfile = async (req, res) => {
     const updateData = req.body;
 
     // Güncellenebilir alanları filtrele
-    const allowedFields = ['first_name', 'last_name', 'birth_date', 'gender', 'phone'];
+    const allowedFields = ['first_name', 'last_name', 'birth_date', 'gender'];
     const filteredData = {};
 
     allowedFields.forEach(field => {
@@ -326,10 +337,20 @@ const uploadProfilePicture = async (req, res) => {
   }
 };
 
-// Kullanıcı arama
+// Gelişmiş kullanıcı arama ve filtreleme
 const searchUsers = async (req, res) => {
   try {
-    const { q } = req.query;
+    const { 
+      q, 
+      gender, 
+      minAge, 
+      maxAge, 
+      location, 
+      radius, 
+      limit = 20, 
+      offset = 0,
+      sortBy = 'relevance' // relevance, newest, oldest, distance
+    } = req.query;
     
     if (!q || q.trim().length < 2) {
       return res.status(400).json({
@@ -338,49 +359,165 @@ const searchUsers = async (req, res) => {
       });
     }
 
+    let whereConditions = [
+      'id != $1',
+      'is_active = true',
+      'email_verified = true'
+    ];
+    
+    let queryParams = [req.user.id];
+    let paramIndex = 2;
+
+    // Arama sorgusu
+    const searchTerm = `%${q.trim()}%`;
+    whereConditions.push(`(
+      LOWER(first_name) LIKE LOWER($${paramIndex}) OR 
+      LOWER(last_name) LIKE LOWER($${paramIndex}) OR 
+      LOWER(email) LIKE LOWER($${paramIndex}) OR
+      LOWER(CONCAT(first_name, ' ', last_name)) LIKE LOWER($${paramIndex})
+    )`);
+    queryParams.push(searchTerm);
+    paramIndex++;
+
+    // Cinsiyet filtresi
+    if (gender && ['male', 'female', 'other'].includes(gender)) {
+      whereConditions.push(`gender = $${paramIndex}`);
+      queryParams.push(gender);
+      paramIndex++;
+    }
+
+    // Yaş filtresi
+    if (minAge || maxAge) {
+      const currentDate = new Date();
+      if (minAge) {
+        const maxBirthDate = new Date(currentDate.getFullYear() - minAge, currentDate.getMonth(), currentDate.getDate());
+        whereConditions.push(`birth_date <= $${paramIndex}`);
+        queryParams.push(maxBirthDate);
+        paramIndex++;
+      }
+      if (maxAge) {
+        const minBirthDate = new Date(currentDate.getFullYear() - maxAge, currentDate.getMonth(), currentDate.getDate());
+        whereConditions.push(`birth_date >= $${paramIndex}`);
+        queryParams.push(minBirthDate);
+        paramIndex++;
+      }
+    }
+
+    // Konum filtresi (basit implementasyon)
+    if (location && radius) {
+      // Bu kısım daha gelişmiş konum tabanlı arama için genişletilebilir
+      whereConditions.push(`location_is_sharing = true`);
+    }
+
+    // Sıralama
+    let orderBy = '';
+    switch (sortBy) {
+      case 'newest':
+        orderBy = 'ORDER BY created_at DESC';
+        break;
+      case 'oldest':
+        orderBy = 'ORDER BY created_at ASC';
+        break;
+      case 'distance':
+        // Konum tabanlı sıralama için placeholder
+        orderBy = 'ORDER BY created_at DESC';
+        break;
+      default: // relevance
+        orderBy = `ORDER BY 
+          CASE 
+            WHEN LOWER(first_name) LIKE LOWER($${paramIndex - 1}) THEN 1
+            WHEN LOWER(last_name) LIKE LOWER($${paramIndex - 1}) THEN 2
+            WHEN LOWER(CONCAT(first_name, ' ', last_name)) LIKE LOWER($${paramIndex - 1}) THEN 3
+            ELSE 4
+          END,
+          created_at DESC`;
+        break;
+    }
+
+    // LIMIT ve OFFSET
+    whereConditions.push(`LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`);
+    queryParams.push(parseInt(limit), parseInt(offset));
+
     const searchQuery = `
       SELECT 
-        id, 
-        first_name, 
-        last_name, 
-        email, 
-        profile_picture,
-        created_at
-      FROM users 
-      WHERE 
-        (LOWER(first_name) LIKE LOWER($1) OR 
-         LOWER(last_name) LIKE LOWER($1) OR 
-         LOWER(email) LIKE LOWER($1) OR
-         LOWER(CONCAT(first_name, ' ', last_name)) LIKE LOWER($1))
-        AND id != $2
-        AND is_verified = true
-      ORDER BY 
-        CASE 
-          WHEN LOWER(first_name) LIKE LOWER($1) THEN 1
-          WHEN LOWER(last_name) LIKE LOWER($1) THEN 2
-          WHEN LOWER(CONCAT(first_name, ' ', last_name)) LIKE LOWER($1) THEN 3
-          ELSE 4
-        END,
-        created_at DESC
-      LIMIT 20
+        u.id, 
+        u.first_name, 
+        u.last_name, 
+        u.email, 
+        u.profile_picture,
+        u.gender,
+        u.birth_date,
+        u.location_latitude,
+        u.location_longitude,
+        u.location_is_sharing,
+        u.created_at,
+        up.bio,
+        up.interests,
+        (SELECT COUNT(*) FROM friendships f WHERE 
+          (f.user_id = $1 AND f.friend_id = u.id AND f.status = 'accepted') OR
+          (f.user_id = u.id AND f.friend_id = $1 AND f.status = 'accepted')
+        ) as mutual_friends_count
+      FROM users u
+      LEFT JOIN user_profiles up ON u.id = up.user_id
+      WHERE ${whereConditions.join(' AND ')}
+      ${orderBy}
     `;
 
-    const searchTerm = `%${q.trim()}%`;
-    const result = await db.query(searchQuery, [searchTerm, req.user.id]);
+    const result = await pool.query(searchQuery, queryParams);
 
-    const users = result.rows.map(user => ({
-      id: user.id,
-      first_name: user.first_name,
-      last_name: user.last_name,
-      name: `${user.first_name} ${user.last_name}`,
-      email: user.email,
-      profile_picture: user.profile_picture,
-      mutual_friends: 0 // Bu özellik daha sonra eklenebilir
-    }));
+    // Toplam sayıyı al
+    const countQuery = `
+      SELECT COUNT(*) 
+      FROM users u
+      LEFT JOIN user_profiles up ON u.id = up.user_id
+      WHERE ${whereConditions.slice(0, -2).join(' AND ')}
+    `;
+    const countResult = await pool.query(countQuery, queryParams.slice(0, -2));
+    const totalCount = parseInt(countResult.rows[0].count);
+
+    const users = result.rows.map(user => {
+      // Yaş hesapla
+      let age = null;
+      if (user.birth_date) {
+        const today = new Date();
+        const birthDate = new Date(user.birth_date);
+        age = today.getFullYear() - birthDate.getFullYear();
+        const monthDiff = today.getMonth() - birthDate.getMonth();
+        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+          age--;
+        }
+      }
+
+      return {
+        id: user.id,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        name: `${user.first_name} ${user.last_name}`,
+        email: user.email,
+        profilePicture: user.profile_picture,
+        gender: user.gender,
+        age: age,
+        bio: user.bio,
+        interests: user.interests || [],
+        locationSharing: user.location_is_sharing,
+        mutualFriendsCount: parseInt(user.mutual_friends_count) || 0,
+        createdAt: user.created_at
+      };
+    });
 
     res.json({
       success: true,
-      data: users,
+      data: {
+        users,
+        pagination: {
+          page: Math.floor(offset / limit) + 1,
+          limit: parseInt(limit),
+          totalCount,
+          totalPages: Math.ceil(totalCount / limit),
+          hasNextPage: (offset + parseInt(limit)) < totalCount,
+          hasPrevPage: offset > 0
+        }
+      },
       message: `${users.length} kullanıcı bulundu`
     });
 
@@ -416,7 +553,7 @@ const getFriends = async (req, res) => {
       ORDER BY f.created_at DESC
     `;
 
-    const result = await db.query(query, [req.user.id]);
+    const result = await pool.query(query, [req.user.id]);
 
     const friends = result.rows.map(friend => ({
       id: friend.id,
@@ -463,7 +600,7 @@ const addFriend = async (req, res) => {
     }
 
     // Kullanıcının var olup olmadığını kontrol et
-    const userCheck = await db.query('SELECT id FROM users WHERE id = $1', [friend_id]);
+    const userCheck = await pool.query('SELECT id FROM users WHERE id = $1', [friend_id]);
     if (userCheck.rows.length === 0) {
       return res.status(404).json({
         success: false,
@@ -472,7 +609,7 @@ const addFriend = async (req, res) => {
     }
 
     // Zaten arkadaş olup olmadığını kontrol et
-    const friendshipCheck = await db.query(
+    const friendshipCheck = await pool.query(
       'SELECT id, status FROM friendships WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)',
       [req.user.id, friend_id]
     );
@@ -493,7 +630,7 @@ const addFriend = async (req, res) => {
     }
 
     // Arkadaşlık isteği oluştur
-    const result = await db.query(
+    const result = await pool.query(
       'INSERT INTO friendships (user_id, friend_id, status) VALUES ($1, $2, $3) RETURNING id',
       [req.user.id, friend_id, 'pending']
     );
@@ -526,7 +663,7 @@ const removeFriend = async (req, res) => {
     }
 
     // Arkadaşlığı sil
-    const result = await db.query(
+    const result = await pool.query(
       'DELETE FROM friendships WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)',
       [req.user.id, friend_id]
     );
@@ -552,6 +689,353 @@ const removeFriend = async (req, res) => {
   }
 };
 
+// Kullanıcı istatistiklerini getir
+const getUserStats = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    console.log('Getting stats for user ID:', userId);
+
+    // Önce tabloların varlığını kontrol et
+    const tableCheckQuery = `
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public' 
+      AND table_name IN ('friendships', 'messages', 'photos')
+    `;
+    const tableCheck = await pool.query(tableCheckQuery);
+    console.log('Available tables:', tableCheck.rows.map(r => r.table_name));
+
+    // Arkadaş sayısını al
+    let friendCount = 0;
+    try {
+      const friendsQuery = `
+        SELECT COUNT(*) as friend_count 
+        FROM friendships 
+        WHERE (user_id = $1 OR friend_id = $1) 
+        AND status = 'accepted'
+      `;
+      console.log('Executing friends query...');
+      const friendsResult = await pool.query(friendsQuery, [userId]);
+      friendCount = parseInt(friendsResult.rows[0].friend_count);
+      console.log('Friends count:', friendCount);
+    } catch (err) {
+      console.error('Friends query error:', err.message);
+    }
+
+    // Mesaj sayısını al (gönderilen + alınan)
+    let messageCount = 0;
+    try {
+      const messagesQuery = `
+        SELECT COUNT(*) as message_count 
+        FROM messages 
+        WHERE sender_id = $1 OR receiver_id = $1
+      `;
+      console.log('Executing messages query...');
+      const messagesResult = await pool.query(messagesQuery, [userId]);
+      messageCount = parseInt(messagesResult.rows[0].message_count);
+      console.log('Messages count:', messageCount);
+    } catch (err) {
+      console.error('Messages query error:', err.message);
+    }
+
+    // Fotoğraf sayısını al
+    let photoCount = 0;
+    try {
+      const photosQuery = `
+        SELECT COUNT(*) as photo_count 
+        FROM photos 
+        WHERE user_id = $1
+      `;
+      console.log('Executing photos query...');
+      const photosResult = await pool.query(photosQuery, [userId]);
+      photoCount = parseInt(photosResult.rows[0].photo_count);
+      console.log('Photos count:', photoCount);
+    } catch (err) {
+      console.error('Photos query error:', err.message);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        friends: friendCount,
+        messages: messageCount,
+        photos: photoCount
+      }
+    });
+
+  } catch (error) {
+    console.error('Kullanıcı istatistikleri getirme hatası:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code
+    });
+    res.status(500).json({
+      success: false,
+      message: 'İstatistikler getirilirken bir hata oluştu',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+};
+
+// Yakındaki kullanıcıları bul
+const getNearbyUsers = async (req, res) => {
+  try {
+    const { latitude, longitude, radius = 5000, limit = 50 } = req.query;
+    
+    if (!latitude || !longitude) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enlem ve boylam koordinatları gerekli'
+      });
+    }
+
+    const query = `
+      SELECT 
+        u.id,
+        u.first_name,
+        u.last_name,
+        u.email,
+        u.profile_picture,
+        u.gender,
+        u.birth_date,
+        u.location_latitude,
+        u.location_longitude,
+        u.created_at,
+        up.bio,
+        up.interests,
+        (SELECT COUNT(*) FROM friendships f WHERE 
+          (f.user_id = $1 AND f.friend_id = u.id AND f.status = 'accepted') OR
+          (f.user_id = u.id AND f.friend_id = $1 AND f.status = 'accepted')
+        ) as mutual_friends_count,
+        (
+          6371 * acos(
+            cos(radians($2)) * cos(radians(u.location_latitude)) * 
+            cos(radians(u.location_longitude) - radians($3)) + 
+            sin(radians($2)) * sin(radians(u.location_latitude))
+          )
+        ) as distance_km
+      FROM users u
+      LEFT JOIN user_profiles up ON u.id = up.user_id
+      WHERE 
+        u.id != $1
+        AND u.is_active = true
+        AND u.email_verified = true
+        AND u.location_is_sharing = true
+        AND u.location_latitude IS NOT NULL
+        AND u.location_longitude IS NOT NULL
+        AND (
+          6371 * acos(
+            cos(radians($2)) * cos(radians(u.location_latitude)) * 
+            cos(radians(u.location_longitude) - radians($3)) + 
+            sin(radians($2)) * sin(radians(u.location_latitude))
+          )
+        ) <= $4
+      ORDER BY distance_km ASC
+      LIMIT $5
+    `;
+
+    const result = await pool.query(query, [
+      req.user.id,
+      parseFloat(latitude),
+      parseFloat(longitude),
+      parseFloat(radius) / 1000, // metre cinsinden radius'u km'ye çevir
+      parseInt(limit)
+    ]);
+
+    const users = result.rows.map(user => {
+      // Yaş hesapla
+      let age = null;
+      if (user.birth_date) {
+        const today = new Date();
+        const birthDate = new Date(user.birth_date);
+        age = today.getFullYear() - birthDate.getFullYear();
+        const monthDiff = today.getMonth() - birthDate.getMonth();
+        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+          age--;
+        }
+      }
+
+      return {
+        id: user.id,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        name: `${user.first_name} ${user.last_name}`,
+        email: user.email,
+        profilePicture: user.profile_picture,
+        gender: user.gender,
+        age: age,
+        bio: user.bio,
+        interests: user.interests || [],
+        distance: Math.round(user.distance_km * 1000), // km'den metre'ye çevir
+        mutualFriendsCount: parseInt(user.mutual_friends_count) || 0,
+        createdAt: user.created_at
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        users,
+        totalCount: users.length,
+        center: {
+          latitude: parseFloat(latitude),
+          longitude: parseFloat(longitude)
+        },
+        radius: parseInt(radius)
+      },
+      message: `${users.length} yakındaki kullanıcı bulundu`
+    });
+
+  } catch (error) {
+    console.error('Yakındaki kullanıcıları bulma hatası:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Yakındaki kullanıcılar alınırken hata oluştu'
+    });
+  }
+};
+
+// Profil seçeneklerini getir
+const getProfileOptions = async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: {
+        interests: INTERESTS,
+        personalityTraits: PERSONALITY_TRAITS,
+        languages: LANGUAGES,
+        relationshipStatus: RELATIONSHIP_STATUS,
+        lookingFor: LOOKING_FOR,
+        lifestylePreferences: LIFESTYLE_PREFERENCES,
+        occupations: OCCUPATIONS,
+        educationLevels: EDUCATION_LEVELS
+      }
+    });
+  } catch (error) {
+    console.error('Profil seçenekleri getirme hatası:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Profil seçenekleri alınırken hata oluştu'
+    });
+  }
+};
+
+// Gelişmiş profil güncelleme
+const updateAdvancedProfile = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const {
+      bio,
+      occupation,
+      education,
+      height,
+      relationshipStatus,
+      lookingFor,
+      interests,
+      languages,
+      hobbies,
+      personalityTraits,
+      lifestylePreferences,
+      socialMedia,
+      additionalInfo
+    } = req.body;
+
+    // Veritabanında user_profiles kaydı var mı kontrol et
+    const checkQuery = 'SELECT id FROM user_profiles WHERE user_id = $1';
+    const checkResult = await pool.query(checkQuery, [userId]);
+
+    if (checkResult.rows.length === 0) {
+      // Yeni profil kaydı oluştur
+      const insertQuery = `
+        INSERT INTO user_profiles (
+          user_id, bio, occupation, education, height, relationship_status, 
+          looking_for, interests, languages, hobbies, personality_traits,
+          lifestyle_preferences, social_media, additional_info, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING *
+      `;
+      
+      const insertParams = [
+        userId,
+        bio || null,
+        occupation || null,
+        education || null,
+        height || null,
+        relationshipStatus || null,
+        lookingFor || null,
+        interests || [],
+        languages || [],
+        hobbies || [],
+        personalityTraits || [],
+        JSON.stringify(lifestylePreferences || {}),
+        JSON.stringify(socialMedia || {}),
+        JSON.stringify(additionalInfo || {})
+      ];
+      
+      const result = await pool.query(insertQuery, insertParams);
+      
+      res.json({
+        success: true,
+        message: 'Profil başarıyla oluşturuldu',
+        data: result.rows[0]
+      });
+    } else {
+      // Mevcut profil kaydını güncelle
+      const updateQuery = `
+        UPDATE user_profiles SET
+          bio = COALESCE($2, bio),
+          occupation = COALESCE($3, occupation),
+          education = COALESCE($4, education),
+          height = COALESCE($5, height),
+          relationship_status = COALESCE($6, relationship_status),
+          looking_for = COALESCE($7, looking_for),
+          interests = COALESCE($8, interests),
+          languages = COALESCE($9, languages),
+          hobbies = COALESCE($10, hobbies),
+          personality_traits = COALESCE($11, personality_traits),
+          lifestyle_preferences = COALESCE($12, lifestyle_preferences),
+          social_media = COALESCE($13, social_media),
+          additional_info = COALESCE($14, additional_info),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = $1
+        RETURNING *
+      `;
+      
+      const updateParams = [
+        userId,
+        bio,
+        occupation,
+        education,
+        height,
+        relationshipStatus,
+        lookingFor,
+        interests,
+        languages,
+        hobbies,
+        personalityTraits,
+        JSON.stringify(lifestylePreferences || {}),
+        JSON.stringify(socialMedia || {}),
+        JSON.stringify(additionalInfo || {})
+      ];
+      
+      const result = await pool.query(updateQuery, updateParams);
+      
+      res.json({
+        success: true,
+        message: 'Profil başarıyla güncellendi',
+        data: result.rows[0]
+      });
+    }
+  } catch (error) {
+    console.error('Gelişmiş profil güncelleme hatası:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Profil güncellenirken hata oluştu'
+    });
+  }
+};
+
 module.exports = {
   getProfile,
   updateProfile,
@@ -563,7 +1047,11 @@ module.exports = {
   uploadProfilePicture,
   upload,
   searchUsers,
+  getNearbyUsers,
+  getProfileOptions,
+  updateAdvancedProfile,
   getFriends,
   addFriend,
-  removeFriend
+  removeFriend,
+  getUserStats
 };

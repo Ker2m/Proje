@@ -34,12 +34,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      [
-        "expo-maps",
-        {
-          "googleMapsApiKey": "YOUR_GOOGLE_MAPS_API_KEY_HERE"
-        }
-      ]
+      "expo-font"
     ]
   }
 }

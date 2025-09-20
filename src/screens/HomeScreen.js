@@ -10,6 +10,8 @@ import {
   Dimensions,
   StatusBar,
   Platform,
+  Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,7 +36,13 @@ const bottomSafeArea = getBottomSafeArea();
 
 export default function HomeScreen() {
   const [userInfo, setUserInfo] = useState(null);
+  const [userStats, setUserStats] = useState({
+    friends: 0,
+    messages: 0,
+    photos: 0
+  });
   const [isLoading, setIsLoading] = useState(true);
+  const [showProfileModal, setShowProfileModal] = useState(false);
 
   useEffect(() => {
     loadUserInfo();
@@ -42,10 +50,45 @@ export default function HomeScreen() {
 
   const loadUserInfo = async () => {
     try {
-      const response = await apiService.getProfile();
-      if (response.success) {
-        setUserInfo(response.data.user);
+      setIsLoading(true);
+      
+      // Token'ı kontrol et ve yükle
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        console.error('No auth token found');
+        setIsLoading(false);
+        return;
       }
+      
+      // Token'ı API service'e ayarla
+      apiService.setToken(token);
+      
+      // Profil bilgilerini ve istatistikleri paralel olarak yükle
+      const [profileResponse, statsResponse] = await Promise.allSettled([
+        apiService.getProfile(),
+        apiService.getUserStats()
+      ]);
+
+      // Profil bilgilerini işle
+      if (profileResponse.status === 'fulfilled' && profileResponse.value.success) {
+        setUserInfo(profileResponse.value.data.user);
+      } else {
+        console.error('Profile load error:', profileResponse.reason);
+      }
+
+      // İstatistikleri işle
+      if (statsResponse.status === 'fulfilled' && statsResponse.value.success) {
+        setUserStats(statsResponse.value.data);
+      } else {
+        console.error('User stats load error:', statsResponse.reason);
+        // Hata durumunda varsayılan değerler
+        setUserStats({
+          friends: 0,
+          messages: 0,
+          photos: 0
+        });
+      }
+
     } catch (error) {
       console.error('User info load error:', error);
     } finally {
@@ -89,9 +132,9 @@ export default function HomeScreen() {
   ];
 
   const stats = [
-    { label: 'Arkadaş', value: '24', icon: 'people' },
-    { label: 'Mesaj', value: '156', icon: 'chatbubbles' },
-    { label: 'Fotoğraf', value: '89', icon: 'camera' },
+    { label: 'Arkadaş', value: userStats.friends.toString(), icon: 'people' },
+    { label: 'Mesaj', value: userStats.messages.toString(), icon: 'chatbubbles' },
+    { label: 'Fotoğraf', value: userStats.photos.toString(), icon: 'camera' },
   ];
 
   const renderQuickAction = (item) => (
@@ -122,6 +165,18 @@ export default function HomeScreen() {
       <Text style={styles.statLabel}>{stat.label}</Text>
     </View>
   );
+
+  const calculateAge = (birthDate) => {
+    if (!birthDate) return '';
+    const today = new Date();
+    const birth = new Date(birthDate);
+    let age = today.getFullYear() - birth.getFullYear();
+    const monthDiff = today.getMonth() - birth.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+      age--;
+    }
+    return age;
+  };
 
   if (isLoading) {
     return (
@@ -156,12 +211,18 @@ export default function HomeScreen() {
                 </Text>
                 <Text style={styles.subtitle}>Bağdat Caddesi'nde neler oluyor?</Text>
               </View>
-              <View style={styles.profileImageContainer}>
+              <TouchableOpacity 
+                style={styles.profileImageContainer}
+                onPress={() => setShowProfileModal(true)}
+                activeOpacity={0.8}
+              >
                 <Image
-                  source={{ uri: 'https://picsum.photos/80/80?random=profile' }}
+                  source={{ 
+                    uri: userInfo?.profile_picture || 'https://picsum.photos/80/80?random=profile' 
+                  }}
                   style={styles.profileImage}
                 />
-              </View>
+              </TouchableOpacity>
             </View>
           </LinearGradient>
 
@@ -201,6 +262,136 @@ export default function HomeScreen() {
           </View>
         </ScrollView>
       </SafeAreaView>
+
+      {/* Profile Modal */}
+      <Modal
+        visible={showProfileModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowProfileModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.profileModalContent}>
+            {/* Modal Header */}
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Profil Bilgileri</Text>
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={() => setShowProfileModal(false)}
+              >
+                <Ionicons name="close" size={24} color={colors.text.secondary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Profile Content */}
+            <ScrollView style={styles.modalScrollView} showsVerticalScrollIndicator={false}>
+              {/* Profile Image and Basic Info */}
+              <View style={styles.profileModalHeader}>
+                <Image
+                  source={{ 
+                    uri: userInfo?.profile_picture || 'https://picsum.photos/120/120?random=profile' 
+                  }}
+                  style={styles.modalProfileImage}
+                />
+                <Text style={styles.modalUserName}>
+                  {userInfo ? `${userInfo.first_name} ${userInfo.last_name}` : 'Kullanıcı'}
+                </Text>
+                <Text style={styles.modalUserAge}>
+                  {userInfo?.birth_date ? `${calculateAge(userInfo.birth_date)} yaşında` : ''}
+                </Text>
+                <Text style={styles.modalUserEmail}>{userInfo?.email || ''}</Text>
+              </View>
+
+              {/* Profile Details */}
+              <View style={styles.profileDetailsContainer}>
+                {/* Personal Info Card */}
+                <View style={styles.detailCard}>
+                  <View style={styles.cardHeader}>
+                    <Ionicons name="person-outline" size={20} color={colors.primary} />
+                    <Text style={styles.cardTitle}>Kişisel Bilgiler</Text>
+                  </View>
+                  
+                  <View style={styles.detailRow}>
+                    <Ionicons name="person" size={16} color={colors.text.secondary} />
+                    <Text style={styles.detailLabel}>Ad:</Text>
+                    <Text style={styles.detailValue}>{userInfo?.first_name || 'Belirtilmemiş'}</Text>
+                  </View>
+                  
+                  <View style={styles.detailRow}>
+                    <Ionicons name="person" size={16} color={colors.text.secondary} />
+                    <Text style={styles.detailLabel}>Soyad:</Text>
+                    <Text style={styles.detailValue}>{userInfo?.last_name || 'Belirtilmemiş'}</Text>
+                  </View>
+                  
+                  <View style={styles.detailRow}>
+                    <Ionicons name="calendar" size={16} color={colors.text.secondary} />
+                    <Text style={styles.detailLabel}>Doğum Tarihi:</Text>
+                    <Text style={styles.detailValue}>
+                      {userInfo?.birth_date ? 
+                        userInfo.birth_date.split('T')[0].split('-').reverse().join('/') : 
+                        'Belirtilmemiş'
+                      }
+                    </Text>
+                  </View>
+                  
+                  <View style={styles.detailRow}>
+                    <Ionicons name="male-female" size={16} color={colors.text.secondary} />
+                    <Text style={styles.detailLabel}>Cinsiyet:</Text>
+                    <Text style={styles.detailValue}>
+                      {userInfo?.gender === 'male' ? 'Erkek' : 
+                       userInfo?.gender === 'female' ? 'Kadın' : 
+                       userInfo?.gender === 'other' ? 'Diğer' : userInfo?.gender || 'Belirtilmemiş'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Contact Info Card */}
+                <View style={styles.detailCard}>
+                  <View style={styles.cardHeader}>
+                    <Ionicons name="mail-outline" size={20} color={colors.secondary} />
+                    <Text style={styles.cardTitle}>İletişim Bilgileri</Text>
+                  </View>
+                  
+                  <View style={styles.detailRow}>
+                    <Ionicons name="mail" size={16} color={colors.text.secondary} />
+                    <Text style={styles.detailLabel}>E-posta:</Text>
+                    <Text style={styles.detailValue}>{userInfo?.email || 'Belirtilmemiş'}</Text>
+                    {userInfo?.email_verified && (
+                      <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                    )}
+                  </View>
+                </View>
+
+                {/* Stats Card */}
+                <View style={styles.detailCard}>
+                  <View style={styles.cardHeader}>
+                    <Ionicons name="stats-chart-outline" size={20} color={colors.accent} />
+                    <Text style={styles.cardTitle}>İstatistikler</Text>
+                  </View>
+                  
+                  <View style={styles.statsRow}>
+                    <View style={styles.statItem}>
+                      <Ionicons name="people" size={20} color={colors.primary} />
+                      <Text style={styles.statValue}>{stats[0].value}</Text>
+                      <Text style={styles.statLabel}>Arkadaş</Text>
+                    </View>
+                    <View style={styles.statItem}>
+                      <Ionicons name="chatbubbles" size={20} color={colors.secondary} />
+                      <Text style={styles.statValue}>{stats[1].value}</Text>
+                      <Text style={styles.statLabel}>Mesaj</Text>
+                    </View>
+                    <View style={styles.statItem}>
+                      <Ionicons name="camera" size={20} color={colors.accent} />
+                      <Text style={styles.statValue}>{stats[2].value}</Text>
+                      <Text style={styles.statLabel}>Fotoğraf</Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -379,5 +570,133 @@ const styles = StyleSheet.create({
   activityTime: {
     fontSize: scaleFont(12),
     color: colors.text.tertiary,
+  },
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  profileModalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: scale(20),
+    width: screenWidth * 0.95,
+    maxHeight: screenHeight * 0.85,
+    shadowColor: colors.shadow.dark,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: getResponsivePadding(20),
+    paddingVertical: verticalScale(15),
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border.light + '30',
+  },
+  modalTitle: {
+    fontSize: scaleFont(20),
+    fontWeight: 'bold',
+    color: colors.text.primary,
+  },
+  closeButton: {
+    padding: scale(8),
+    borderRadius: scale(20),
+    backgroundColor: colors.background,
+  },
+  modalScrollView: {
+    maxHeight: screenHeight * 0.7,
+  },
+  profileModalHeader: {
+    alignItems: 'center',
+    paddingVertical: verticalScale(20),
+    paddingHorizontal: getResponsivePadding(20),
+  },
+  modalProfileImage: {
+    width: scale(100),
+    height: scale(100),
+    borderRadius: scale(50),
+    borderWidth: scale(3),
+    borderColor: colors.primary,
+    marginBottom: verticalScale(15),
+  },
+  modalUserName: {
+    fontSize: scaleFont(24),
+    fontWeight: 'bold',
+    color: colors.text.primary,
+    marginBottom: verticalScale(5),
+    textAlign: 'center',
+  },
+  modalUserAge: {
+    fontSize: scaleFont(16),
+    color: colors.text.secondary,
+    marginBottom: verticalScale(5),
+  },
+  modalUserEmail: {
+    fontSize: scaleFont(14),
+    color: colors.text.tertiary,
+    textAlign: 'center',
+  },
+  profileDetailsContainer: {
+    paddingHorizontal: getResponsivePadding(20),
+    paddingBottom: verticalScale(20),
+  },
+  detailCard: {
+    backgroundColor: colors.background,
+    borderRadius: scale(15),
+    padding: getResponsivePadding(15),
+    marginBottom: verticalScale(15),
+    shadowColor: colors.shadow.light,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: verticalScale(12),
+    paddingBottom: verticalScale(8),
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border.light + '30',
+  },
+  cardTitle: {
+    fontSize: scaleFont(16),
+    fontWeight: '600',
+    color: colors.text.primary,
+    marginLeft: scale(8),
+  },
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: verticalScale(8),
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border.light + '20',
+  },
+  detailLabel: {
+    fontSize: scaleFont(14),
+    fontWeight: '500',
+    color: colors.text.secondary,
+    marginLeft: scale(8),
+    width: scale(100),
+  },
+  detailValue: {
+    fontSize: scaleFont(14),
+    color: colors.text.primary,
+    flex: 1,
+    marginLeft: scale(8),
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingTop: verticalScale(10),
+  },
+  statItem: {
+    alignItems: 'center',
+    flex: 1,
   },
 });

@@ -14,9 +14,10 @@ class SocketService {
   // Socket bağlantısını başlat
   async connect() {
     try {
+      console.log('SocketService: Bağlantı başlatılıyor...');
       const token = await apiService.getStoredToken();
       if (!token) {
-        console.log('No token found, skipping socket connection');
+        console.log('SocketService: Token bulunamadı, socket bağlantısı atlanıyor');
         return;
       }
 
@@ -24,6 +25,7 @@ class SocketService {
       const baseURL = apiService.getBaseURL();
       // API URL'den base URL'i çıkar (http://192.168.1.2:3000/api -> http://192.168.1.2:3000)
       const socketURL = baseURL.replace('/api', '');
+      console.log('SocketService: Socket URL:', socketURL);
 
       this.socket = io(socketURL, {
         auth: {
@@ -31,13 +33,16 @@ class SocketService {
         },
         transports: ['websocket', 'polling'],
         timeout: 20000,
-        forceNew: true
+        forceNew: true,
+        autoConnect: true
       });
 
+      console.log('SocketService: Socket instance oluşturuldu');
+      console.log('SocketService: Token:', token ? 'Mevcut' : 'Yok');
       this.setupEventListeners();
       
     } catch (error) {
-      console.error('Socket connection error:', error);
+      console.error('SocketService: Socket bağlantı hatası:', error);
     }
   }
 
@@ -47,14 +52,15 @@ class SocketService {
 
     // Bağlantı başarılı
     this.socket.on('connect', () => {
-      console.log('Socket connected:', this.socket.id);
+      console.log('SocketService: Socket bağlandı, ID:', this.socket.id);
       this.isConnected = true;
       this.reconnectAttempts = 0;
+      this.emit('connection_status', { connected: true });
     });
 
     // Bağlantı kesildi
     this.socket.on('disconnect', (reason) => {
-      console.log('Socket disconnected:', reason);
+      console.log('SocketService: Socket bağlantısı kesildi, sebep:', reason);
       this.isConnected = false;
       this.emit('connection_status', { connected: false, reason });
       
@@ -66,7 +72,7 @@ class SocketService {
 
     // Bağlantı hatası
     this.socket.on('connect_error', (error) => {
-      console.error('Socket connection error:', error);
+      console.error('SocketService: Socket bağlantı hatası:', error);
       this.isConnected = false;
       this.emit('connection_error', error);
       this.handleReconnect();
@@ -92,20 +98,50 @@ class SocketService {
 
     // Mesaj alındı
     this.socket.on('message_received', (data) => {
-      console.log('Message received:', data);
+      console.log('SocketService: Mesaj alındı:', data);
       this.emit('message_received', data);
     });
 
     // Kullanıcı katıldı
     this.socket.on('user_joined', (data) => {
-      console.log('User joined:', data);
+      console.log('SocketService: Kullanıcı katıldı:', data);
       this.emit('user_joined', data);
     });
 
     // Kullanıcı ayrıldı
     this.socket.on('user_left', (data) => {
-      console.log('User left:', data);
+      console.log('SocketService: Kullanıcı ayrıldı:', data);
       this.emit('user_left', data);
+    });
+
+    // Online kullanıcı listesi
+    this.socket.on('online_users_list', (data) => {
+      console.log('SocketService: Online kullanıcı listesi alındı:', data);
+      this.emit('online_users_list', data);
+    });
+
+    // Yeni aktivite
+    this.socket.on('new_activity', (data) => {
+      console.log('SocketService: Yeni aktivite alındı:', data);
+      this.emit('new_activity', data);
+    });
+
+    // Aktivite listesi
+    this.socket.on('activities_list', (data) => {
+      console.log('SocketService: Aktivite listesi alındı:', data);
+      this.emit('activities_list', data);
+    });
+
+    // Kullanıcı konum güncellemesi
+    this.socket.on('user_location_update', (data) => {
+      console.log('SocketService: Kullanıcı konum güncellemesi alındı:', data);
+      this.emit('user_location_update', data);
+    });
+
+    // Yakındaki kullanıcılar listesi
+    this.socket.on('nearby_users_list', (data) => {
+      console.log('SocketService: Yakındaki kullanıcılar listesi alındı:', data);
+      this.emit('nearby_users_list', data);
     });
   }
 
@@ -257,6 +293,86 @@ class SocketService {
       return true;
     } catch (error) {
       console.error('Error updating user status:', error);
+      return false;
+    }
+  }
+
+  // Aktivite oluştur
+  createActivity(type, title, description, metadata = {}) {
+    if (!this.socket || !this.isConnected) {
+      console.log('Socket not connected, activity not created');
+      return false;
+    }
+
+    try {
+      this.socket.emit('create_activity', {
+        type: type,
+        title: title,
+        description: description,
+        metadata: metadata,
+        timestamp: new Date().toISOString()
+      });
+      console.log('Activity created:', type);
+      return true;
+    } catch (error) {
+      console.error('Error creating activity:', error);
+      return false;
+    }
+  }
+
+  // Aktivite listesi iste
+  requestActivities() {
+    if (!this.socket || !this.isConnected) {
+      console.log('Socket not connected, cannot request activities');
+      return false;
+    }
+
+    try {
+      this.socket.emit('request_activities', {});
+      console.log('Activities requested');
+      return true;
+    } catch (error) {
+      console.error('Error requesting activities:', error);
+      return false;
+    }
+  }
+
+  // Konum güncellemesi gönder
+  sendLocationUpdate(locationData) {
+    if (!this.socket || !this.isConnected) {
+      console.log('Socket not connected, location not sent');
+      return false;
+    }
+
+    try {
+      this.socket.emit('location_update', {
+        location: locationData,
+        timestamp: new Date().toISOString()
+      });
+      console.log('Location update sent:', locationData);
+      return true;
+    } catch (error) {
+      console.error('Error sending location update:', error);
+      return false;
+    }
+  }
+
+  // Yakındaki kullanıcıları iste
+  requestNearbyUsers(radius = 5000, limit = 100) {
+    if (!this.socket || !this.isConnected) {
+      console.log('Socket not connected, cannot request nearby users');
+      return false;
+    }
+
+    try {
+      this.socket.emit('request_nearby_users', {
+        radius: radius,
+        limit: limit
+      });
+      console.log('Nearby users requested');
+      return true;
+    } catch (error) {
+      console.error('Error requesting nearby users:', error);
       return false;
     }
   }
