@@ -94,6 +94,16 @@ export default function PhotoScreen() {
   // Fotoğrafları yükle
   const loadPhotos = async () => {
     try {
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        console.log('Token bulunamadı, fotoğraflar yüklenemiyor');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
       setLoading(true);
       const endpoint = '/photos/feed';
       const response = await apiService.get(endpoint);
@@ -121,6 +131,16 @@ export default function PhotoScreen() {
   // Mevcut kullanıcı bilgisini yükle
   const loadCurrentUser = async () => {
     try {
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        console.log('Token bulunamadı, kullanıcı bilgisi yüklenemiyor');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
       const response = await apiService.getProfile();
       if (response.success) {
         setCurrentUserId(response.data.user.id);
@@ -184,6 +204,16 @@ export default function PhotoScreen() {
   // Fotoğraf yükleme fonksiyonu
   const uploadPhoto = async (uri) => {
     try {
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        Alert.alert('Hata', 'Oturum süreniz dolmuş. Lütfen tekrar giriş yapın.');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
       setUploading(true);
       
       const formData = new FormData();
@@ -233,6 +263,16 @@ export default function PhotoScreen() {
   // Fotoğraf beğenme fonksiyonu
   const likePhoto = async (photoId) => {
     try {
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        Alert.alert('Hata', 'Oturum süreniz dolmuş. Lütfen tekrar giriş yapın.');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
       const response = await apiService.post(`/photos/${photoId}/like`);
       
       if (response.success) {
@@ -329,6 +369,16 @@ export default function PhotoScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              // Token'ı kontrol et
+              const token = await apiService.getStoredToken();
+              if (!token) {
+                Alert.alert('Hata', 'Oturum süreniz dolmuş. Lütfen tekrar giriş yapın.');
+                return;
+              }
+              
+              // Token'ı API servisine set et
+              apiService.setToken(token);
+              
               const response = await apiService.delete(`/photos/${photo.id}`);
               if (response.success) {
                 Alert.alert('Başarılı', 'Fotoğraf silindi');

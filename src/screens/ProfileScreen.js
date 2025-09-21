@@ -63,6 +63,17 @@ export default function ProfileScreen({ route, navigation }) {
     messages: 0,
     photos: 0
   });
+  const [socialStats, setSocialStats] = useState({
+    profileVisits: 0,
+    todayVisits: 0,
+    weekVisits: 0,
+    monthVisits: 0,
+    followers: 0,
+    following: 0
+  });
+  const [recentVisitors, setRecentVisitors] = useState([]);
+  const [followers, setFollowers] = useState([]);
+  const [following, setFollowing] = useState([]);
   const [activities, setActivities] = useState([]);
   const [showNotification, setShowNotification] = useState(false);
   const [notificationMessage, setNotificationMessage] = useState('');
@@ -140,6 +151,7 @@ export default function ProfileScreen({ route, navigation }) {
     const unsubscribe = navigation.addListener('focus', () => {
       loadUserStats();
       loadActivities();
+      loadSocialStats();
     });
 
     return unsubscribe;
@@ -274,6 +286,61 @@ export default function ProfileScreen({ route, navigation }) {
       console.error('Activities load error:', error);
       // Hata durumunda boş liste kullan
       setActivities([]);
+    }
+  };
+
+  const loadSocialStats = async () => {
+    try {
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        console.log('No token found for social stats loading');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
+      console.log('Loading social stats...');
+      
+      // Profil ziyaret istatistiklerini yükle
+      const visitStatsResponse = await apiService.getProfileVisitStats();
+      if (visitStatsResponse.success) {
+        const visitStats = visitStatsResponse.data;
+        
+        // Takip istatistiklerini yükle
+        const followStatsResponse = await apiService.getFollowStats();
+        if (followStatsResponse.success) {
+          const followStats = followStatsResponse.data;
+          
+          setSocialStats({
+            profileVisits: visitStats.totalVisits,
+            todayVisits: visitStats.todayVisits,
+            weekVisits: visitStats.weekVisits,
+            monthVisits: visitStats.monthVisits,
+            followers: followStats.followersCount,
+            following: followStats.followingCount
+          });
+        }
+      }
+      
+      // Son ziyaretçileri yükle
+      const visitorsResponse = await apiService.getRecentVisitors(5);
+      if (visitorsResponse.success) {
+        setRecentVisitors(visitorsResponse.data);
+      }
+      
+    } catch (error) {
+      console.error('Social stats load error:', error);
+      // Hata durumunda varsayılan değerleri kullan
+      setSocialStats({
+        profileVisits: 0,
+        todayVisits: 0,
+        weekVisits: 0,
+        monthVisits: 0,
+        followers: 0,
+        following: 0
+      });
     }
   };
 
@@ -673,6 +740,13 @@ export default function ProfileScreen({ route, navigation }) {
     { label: 'Arkadaş', value: userStats.friends.toString(), icon: 'people' },
     { label: 'Mesaj', value: userStats.messages.toString(), icon: 'chatbubbles' },
     { label: 'Fotoğraf', value: userStats.photos.toString(), icon: 'camera' },
+  ];
+
+  // Sosyal istatistikler
+  const socialStatsData = [
+    { label: 'Ziyaret', value: socialStats.profileVisits.toString(), icon: 'eye' },
+    { label: 'Takipçi', value: socialStats.followers.toString(), icon: 'heart' },
+    { label: 'Takip', value: socialStats.following.toString(), icon: 'person-add' },
   ];
 
   const renderMenuItem = (item) => (

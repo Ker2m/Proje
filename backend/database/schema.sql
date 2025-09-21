@@ -221,3 +221,29 @@ CREATE TRIGGER update_friendships_updated_at BEFORE UPDATE ON friendships
 
 CREATE TRIGGER update_notifications_updated_at BEFORE UPDATE ON notifications
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Profil ziyaretleri tablosu
+CREATE TABLE IF NOT EXISTS profile_visits (
+    id SERIAL PRIMARY KEY,
+    visitor_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    profile_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(visitor_id, profile_id, DATE(created_at)) -- Aynı gün içinde tekrar sayılmaz
+);
+
+-- Takip sistemi tablosu (followers/following)
+CREATE TABLE IF NOT EXISTS follows (
+    id SERIAL PRIMARY KEY,
+    follower_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    following_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(follower_id, following_id)
+);
+
+-- Indexler
+CREATE INDEX IF NOT EXISTS idx_profile_visits_visitor ON profile_visits(visitor_id);
+CREATE INDEX IF NOT EXISTS idx_profile_visits_profile ON profile_visits(profile_id);
+CREATE INDEX IF NOT EXISTS idx_profile_visits_created_at ON profile_visits(created_at);
+CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id);
+CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
+CREATE INDEX IF NOT EXISTS idx_follows_created_at ON follows(created_at);

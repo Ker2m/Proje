@@ -340,17 +340,7 @@ const uploadProfilePicture = async (req, res) => {
 // Gelişmiş kullanıcı arama ve filtreleme
 const searchUsers = async (req, res) => {
   try {
-    const { 
-      q, 
-      gender, 
-      minAge, 
-      maxAge, 
-      location, 
-      radius, 
-      limit = 20, 
-      offset = 0,
-      sortBy = 'relevance' // relevance, newest, oldest, distance
-    } = req.query;
+    const { q } = req.query;
     
     if (!q || q.trim().length < 2) {
       return res.status(400).json({
@@ -359,173 +349,61 @@ const searchUsers = async (req, res) => {
       });
     }
 
-    let whereConditions = [
-      'id != $1',
-      'is_active = true',
-      'email_verified = true'
-    ];
-    
-    let queryParams = [req.user.id];
-    let paramIndex = 2;
+    console.log('Search request received:', { q, userId: req.user.id });
 
-    // Arama sorgusu
-    const searchTerm = `%${q.trim()}%`;
-    whereConditions.push(`(
-      LOWER(first_name) LIKE LOWER($${paramIndex}) OR 
-      LOWER(last_name) LIKE LOWER($${paramIndex}) OR 
-      LOWER(email) LIKE LOWER($${paramIndex}) OR
-      LOWER(CONCAT(first_name, ' ', last_name)) LIKE LOWER($${paramIndex})
-    )`);
-    queryParams.push(searchTerm);
-    paramIndex++;
-
-    // Cinsiyet filtresi
-    if (gender && ['male', 'female', 'other'].includes(gender)) {
-      whereConditions.push(`gender = $${paramIndex}`);
-      queryParams.push(gender);
-      paramIndex++;
-    }
-
-    // Yaş filtresi
-    if (minAge || maxAge) {
-      const currentDate = new Date();
-      if (minAge) {
-        const maxBirthDate = new Date(currentDate.getFullYear() - minAge, currentDate.getMonth(), currentDate.getDate());
-        whereConditions.push(`birth_date <= $${paramIndex}`);
-        queryParams.push(maxBirthDate);
-        paramIndex++;
-      }
-      if (maxAge) {
-        const minBirthDate = new Date(currentDate.getFullYear() - maxAge, currentDate.getMonth(), currentDate.getDate());
-        whereConditions.push(`birth_date >= $${paramIndex}`);
-        queryParams.push(minBirthDate);
-        paramIndex++;
-      }
-    }
-
-    // Konum filtresi (basit implementasyon)
-    if (location && radius) {
-      // Bu kısım daha gelişmiş konum tabanlı arama için genişletilebilir
-      whereConditions.push(`location_is_sharing = true`);
-    }
-
-    // Sıralama
-    let orderBy = '';
-    switch (sortBy) {
-      case 'newest':
-        orderBy = 'ORDER BY created_at DESC';
-        break;
-      case 'oldest':
-        orderBy = 'ORDER BY created_at ASC';
-        break;
-      case 'distance':
-        // Konum tabanlı sıralama için placeholder
-        orderBy = 'ORDER BY created_at DESC';
-        break;
-      default: // relevance
-        orderBy = `ORDER BY 
-          CASE 
-            WHEN LOWER(first_name) LIKE LOWER($${paramIndex - 1}) THEN 1
-            WHEN LOWER(last_name) LIKE LOWER($${paramIndex - 1}) THEN 2
-            WHEN LOWER(CONCAT(first_name, ' ', last_name)) LIKE LOWER($${paramIndex - 1}) THEN 3
-            ELSE 4
-          END,
-          created_at DESC`;
-        break;
-    }
-
-    // LIMIT ve OFFSET
-    whereConditions.push(`LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`);
-    queryParams.push(parseInt(limit), parseInt(offset));
-
+    // İsme göre arama yap
     const searchQuery = `
       SELECT 
-        u.id, 
-        u.first_name, 
-        u.last_name, 
-        u.email, 
-        u.profile_picture,
-        u.gender,
-        u.birth_date,
-        u.location_latitude,
-        u.location_longitude,
-        u.location_is_sharing,
-        u.created_at,
-        up.bio,
-        up.interests,
-        (SELECT COUNT(*) FROM friendships f WHERE 
-          (f.user_id = $1 AND f.friend_id = u.id AND f.status = 'accepted') OR
-          (f.user_id = u.id AND f.friend_id = $1 AND f.status = 'accepted')
-        ) as mutual_friends_count
-      FROM users u
-      LEFT JOIN user_profiles up ON u.id = up.user_id
-      WHERE ${whereConditions.join(' AND ')}
-      ${orderBy}
+        id, 
+        first_name, 
+        last_name, 
+        email
+      FROM users
+      WHERE id != $1 
+        AND is_active = true
+        AND (LOWER(first_name) LIKE LOWER($2) OR LOWER(last_name) LIKE LOWER($2))
+      LIMIT 10
     `;
 
-    const result = await pool.query(searchQuery, queryParams);
+    console.log('Search query:', searchQuery);
+    console.log('Search params:', [req.user.id, `%${q}%`]);
 
-    // Toplam sayıyı al
-    const countQuery = `
-      SELECT COUNT(*) 
-      FROM users u
-      LEFT JOIN user_profiles up ON u.id = up.user_id
-      WHERE ${whereConditions.slice(0, -2).join(' AND ')}
-    `;
-    const countResult = await pool.query(countQuery, queryParams.slice(0, -2));
-    const totalCount = parseInt(countResult.rows[0].count);
+    const result = await pool.query(searchQuery, [req.user.id, `%${q}%`]);
 
-    const users = result.rows.map(user => {
-      // Yaş hesapla
-      let age = null;
-      if (user.birth_date) {
-        const today = new Date();
-        const birthDate = new Date(user.birth_date);
-        age = today.getFullYear() - birthDate.getFullYear();
-        const monthDiff = today.getMonth() - birthDate.getMonth();
-        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
-          age--;
-        }
-      }
+    console.log('Search result:', result.rows);
 
-      return {
-        id: user.id,
-        firstName: user.first_name,
-        lastName: user.last_name,
-        name: `${user.first_name} ${user.last_name}`,
-        email: user.email,
-        profilePicture: user.profile_picture,
-        gender: user.gender,
-        age: age,
-        bio: user.bio,
-        interests: user.interests || [],
-        locationSharing: user.location_is_sharing,
-        mutualFriendsCount: parseInt(user.mutual_friends_count) || 0,
-        createdAt: user.created_at
-      };
-    });
+    const users = result.rows.map(user => ({
+      id: user.id,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      name: `${user.first_name} ${user.last_name}`,
+      email: user.email,
+      profilePicture: null,
+      gender: null,
+      age: null,
+      bio: null,
+      interests: [],
+      locationSharing: false,
+      mutualFriendsCount: 0,
+      createdAt: null
+    }));
+
+    console.log('Formatted users:', users);
 
     res.json({
       success: true,
-      data: {
-        users,
-        pagination: {
-          page: Math.floor(offset / limit) + 1,
-          limit: parseInt(limit),
-          totalCount,
-          totalPages: Math.ceil(totalCount / limit),
-          hasNextPage: (offset + parseInt(limit)) < totalCount,
-          hasPrevPage: offset > 0
-        }
-      },
+      data: users,
       message: `${users.length} kullanıcı bulundu`
     });
 
   } catch (error) {
     console.error('Kullanıcı arama hatası:', error);
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
-      message: 'Kullanıcı arama sırasında bir hata oluştu'
+      message: 'Kullanıcı arama sırasında bir hata oluştu',
+      error: error.message
     });
   }
 };

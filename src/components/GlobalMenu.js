@@ -32,6 +32,14 @@ export default function GlobalMenu({ isVisible, onClose, onNavigate }) {
     },
     {
       id: '2',
+      title: 'LOCAL CHAT',
+      icon: 'chatbubble-ellipses',
+      color: '#10B981', // Green color for local chat
+      gradient: ['#10B981', '#34D399'],
+      description: 'Anlık mesajlaşma',
+    },
+    {
+      id: '3',
       title: 'SUPPORT',
       icon: 'heart',
       color: '#8B5CF6', // Purple color like in the image
@@ -39,7 +47,7 @@ export default function GlobalMenu({ isVisible, onClose, onNavigate }) {
       description: 'Yardım ve destek',
     },
     {
-      id: '3',
+      id: '4',
       title: 'CREW',
       icon: 'people',
       color: '#374151', // Dark gray
@@ -123,10 +131,13 @@ export default function GlobalMenu({ isVisible, onClose, onNavigate }) {
         case '1': // İtiraf
           onNavigate('Confession');
           break;
-        case '2': // Support
+        case '2': // Local Chat
+          onNavigate('LocalChat');
+          break;
+        case '3': // Support
           onNavigate('NotificationCenter'); // Bildirim merkezine yönlendir
           break;
-        case '3': // Crew
+        case '4': // Crew
           onNavigate('Profile'); // Şimdilik Profile'a yönlendir
           break;
         default:

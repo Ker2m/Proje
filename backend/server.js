@@ -23,6 +23,8 @@ const securityRoutes = require('./routes/security');
 const locationRoutes = require('./routes/location');
 const friendshipRoutes = require('./routes/friendships');
 const notificationRoutes = require('./routes/notifications');
+const socialRoutes = require('./routes/social');
+const chatRoutes = require('./routes/chat');
 
 // Import models
 const Activity = require('./models/Activity');
@@ -34,7 +36,24 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:19006", "http://192.168.1.2:19006", "exp://192.168.1.2:19000"],
+    origin: [
+      "http://localhost:19006", 
+      "http://localhost:19000",
+      "http://127.0.0.1:19006",
+      "http://127.0.0.1:19000",
+      "http://192.168.1.2:19006", 
+      "exp://192.168.1.2:19000",
+      "https://*.exp.direct",
+      "https://*.exp.direct:443",
+      "https://*.exp.direct:80",
+      "https://*.exp.direct:19000",
+      "https://*.exp.direct:19006",
+      "exp://*.exp.direct",
+      "exp://*.exp.direct:443",
+      "exp://*.exp.direct:80",
+      "exp://*.exp.direct:19000",
+      "exp://*.exp.direct:19006"
+    ],
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -46,7 +65,24 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet());
 app.use(morgan('combined'));
 app.use(cors({
-  origin: ["http://localhost:19006", "http://192.168.1.2:19006", "exp://192.168.1.2:19000"],
+  origin: [
+    "http://localhost:19006", 
+    "http://localhost:19000",
+    "http://127.0.0.1:19006",
+    "http://127.0.0.1:19000",
+    "http://192.168.1.2:19006", 
+    "exp://192.168.1.2:19000",
+    "https://*.exp.direct",
+    "https://*.exp.direct:443",
+    "https://*.exp.direct:80",
+    "https://*.exp.direct:19000",
+    "https://*.exp.direct:19006",
+    "exp://*.exp.direct",
+    "exp://*.exp.direct:443",
+    "exp://*.exp.direct:80",
+    "exp://*.exp.direct:19000",
+    "exp://*.exp.direct:19006"
+  ],
   credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -96,8 +132,11 @@ io.use(async (socket, next) => {
   }
 });
 
-// Online kullanıcıları takip et
-const onlineUsers = new Map();
+  // Online kullanıcıları takip et
+  const onlineUsers = new Map();
+  
+  // Kullanıcı bilgilerini sakla
+  const userInfo = new Map();
 
 // Socket.io connection handling
 io.on('connection', (socket) => {
@@ -113,6 +152,20 @@ io.on('connection', (socket) => {
     userEmail: socket.userEmail,
     socketId: socket.id,
     joinedAt: new Date().toISOString()
+  });
+
+  // Kullanıcı bilgilerini al ve sakla
+  const User = require('./models/User');
+  User.findById(socket.userId).then(user => {
+    if (user) {
+      socket.userFirstName = user.first_name;
+      socket.userLastName = user.last_name;
+      userInfo.set(socket.userId, {
+        firstName: user.first_name,
+        lastName: user.last_name,
+        profilePicture: user.profile_picture
+      });
+    }
   });
 
   console.log(`👥 Total online users: ${onlineUsers.size}`);
@@ -150,9 +203,36 @@ io.on('connection', (socket) => {
       room: data.room || 'general'
     };
 
-    // Mesajı odaya gönder (kendi mesajımızı da dahil et)
-    io.to(data.room || 'general').emit('message_received', messageData);
-    console.log(`📤 Message broadcasted to room ${data.room || 'general'}`);
+    // Mesajı tüm kullanıcılara gönder (genel sohbet için)
+    if (data.room === 'general' || !data.room) {
+      io.emit('message_received', messageData);
+      console.log(`📤 Message broadcasted to all users in general chat`);
+    } else {
+      // Özel odalar için sadece o odaya gönder
+      io.to(data.room).emit('message_received', messageData);
+      console.log(`📤 Message broadcasted to room ${data.room}`);
+    }
+  });
+
+  // Özel mesaj gönderme
+  socket.on('send_private_message', (data) => {
+    console.log(`💬 Private message received from ${socket.userEmail} to friend ${data.friendId}: ${data.message}`);
+    const messageData = {
+      message: data.message,
+      senderId: socket.userId,
+      senderEmail: socket.userEmail,
+      timestamp: new Date().toISOString(),
+      room: data.room,
+      friendId: data.friendId
+    };
+
+    // Özel odaya mesajı gönder
+    if (data.room) {
+      io.to(data.room).emit('private_message_received', messageData);
+      console.log(`📤 Private message broadcasted to room ${data.room}`);
+    } else {
+      console.log(`❌ Private message room not specified`);
+    }
   });
 
   // Oda değiştirme
@@ -379,6 +459,141 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Konum güncellemesi
+  socket.on('location_update', async (data) => {
+    try {
+      console.log(`📍 Location update from ${socket.userEmail}:`, data.location);
+      
+      const { location } = data;
+      
+      if (!location || !location.latitude || !location.longitude) {
+        socket.emit('location_error', { message: 'Geçersiz konum verisi' });
+        return;
+      }
+      
+      // Konumu diğer kullanıcılara yayınla
+      socket.broadcast.emit('user_location_update', {
+        userId: socket.userId,
+        userEmail: socket.userEmail,
+        firstName: socket.userFirstName || 'Kullanıcı', // Kullanıcı adını ekle
+        lastName: socket.userLastName || '',
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          accuracy: location.accuracy
+        },
+        timestamp: new Date().toISOString(),
+        isOnline: true
+      });
+      
+      console.log(`📍 Location broadcasted to other users for ${socket.userEmail}`);
+      
+    } catch (error) {
+      console.error('Error handling location update:', error);
+      socket.emit('location_error', { message: 'Konum güncellenirken hata oluştu' });
+    }
+  });
+
+  // Yakındaki kullanıcıları iste
+  socket.on('request_nearby_users', async (data) => {
+    try {
+      console.log(`📍 Nearby users requested by ${socket.userEmail}`);
+      
+      const { radius = 5000, limit = 100 } = data;
+      
+      // Kullanıcının konumunu al
+      const User = require('./models/User');
+      const user = await User.findById(socket.userId);
+      
+      if (!user || !user.location_latitude || !user.location_longitude || !user.location_is_sharing) {
+        socket.emit('nearby_users_list', {
+          success: true,
+          users: [],
+          radius: radius,
+          limit: limit,
+          message: 'Konum paylaşımı kapalı veya konum bulunamadı'
+        });
+        return;
+      }
+
+      // Haversine formülü ile mesafe hesaplama
+      const calculateDistance = (lat1, lng1, lat2, lng2) => {
+        const R = 6371000; // Dünya'nın yarıçapı (metre)
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLng/2) * Math.sin(dLng/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        const distance = R * c;
+        
+        // GPS hatası düzeltmesi: Eğer mesafe 50 metreden azsa, çok daha az göster
+        if (distance < 50) {
+          return Math.max(distance * 0.2, 1); // GPS hatasını büyük oranda düzelt, minimum 1m
+        }
+        
+        return distance;
+      };
+
+      // Tüm kullanıcıları al (konum paylaşımı açık olanlar)
+      // Zaman filtresi kaldırıldı - tüm aktif kullanıcıları al
+      const allUsers = await User.findUsersWithLocationSharing();
+
+      const userLat = user.location_latitude;
+      const userLng = user.location_longitude;
+
+      console.log(`📍 Found ${allUsers.length} users with location sharing enabled`);
+      console.log(`📍 Current user location: ${userLat}, ${userLng}`);
+
+      // Yakındaki kullanıcıları filtrele
+      const nearbyUsers = allUsers
+        .filter(u => u.id !== socket.userId)
+        .map(u => {
+          const distance = calculateDistance(
+            userLat, userLng,
+            u.location_latitude, u.location_longitude
+          );
+          console.log(`📍 User ${u.first_name} at distance: ${Math.round(distance)}m`);
+          // Online durumu: Son 30 saniye içinde konum güncellemesi varsa online
+          const now = new Date();
+          const lastUpdate = new Date(u.location_last_updated);
+          const isOnline = (now - lastUpdate) < 30 * 1000; // 30 saniye içinde güncellenmişse online
+          
+          return {
+            userId: u.id,
+            firstName: u.first_name,
+            lastName: u.last_name,
+            profilePicture: u.profile_picture,
+            location: {
+              latitude: u.location_latitude,
+              longitude: u.location_longitude,
+              accuracy: u.location_accuracy
+            },
+            lastSeen: u.location_last_updated,
+            distance: Math.round(distance),
+            isOnline: isOnline
+          };
+        })
+        .filter(u => u.distance <= radius)
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, limit);
+      
+      socket.emit('nearby_users_list', {
+        success: true,
+        users: nearbyUsers,
+        radius: radius,
+        limit: limit,
+        message: `${nearbyUsers.length} kullanıcı bulundu`
+      });
+      
+      console.log(`📍 ${nearbyUsers.length} nearby users sent to ${socket.userEmail}`);
+      
+    } catch (error) {
+      console.error('Error getting nearby users:', error);
+      socket.emit('nearby_users_error', { message: 'Yakındaki kullanıcılar alınırken hata oluştu' });
+    }
+  });
+
   // Bağlantı kesildiğinde
   socket.on('disconnect', (reason) => {
     console.log(`🔌 User disconnected: ${socket.userEmail} (${socket.id}) - Reason: ${reason}`);
@@ -415,6 +630,8 @@ app.use('/api/security', securityRoutes);
 app.use('/api/location', locationRoutes);
 app.use('/api/friendships', friendshipRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/social', socialRoutes);
+app.use('/api/chat', chatRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -438,15 +655,23 @@ const startServer = async () => {
     
     // Email servisini yapılandır (opsiyonel)
     if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-      emailService.configure({
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT || 587,
-        secure: process.env.SMTP_SECURE === 'true',
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
-      });
+      try {
+        emailService.configure({
+          host: process.env.SMTP_HOST,
+          port: parseInt(process.env.SMTP_PORT) || 587,
+          secure: process.env.SMTP_SECURE === 'true',
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS
+        });
+        console.log('✅ Email servisi başarıyla yapılandırıldı');
+      } catch (error) {
+        console.error('❌ Email servisi yapılandırılamadı:', error.message);
+      }
     } else {
       console.log('⚠️  Email servisi yapılandırılmamış (SMTP bilgileri eksik)');
+      console.log('SMTP_HOST:', process.env.SMTP_HOST);
+      console.log('SMTP_USER:', process.env.SMTP_USER);
+      console.log('SMTP_PASS:', process.env.SMTP_PASS ? 'SET' : 'NOT SET');
     }
     
     server.listen(PORT, () => {

@@ -11,6 +11,7 @@ import {
   StatusBar,
   ActivityIndicator,
   Animated,
+  AppState,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 // React Native Maps import'u
@@ -49,6 +50,9 @@ export default function MapScreen() {
   const [locationAccuracy, setLocationAccuracy] = useState(null);
   const [lastLocationUpdate, setLastLocationUpdate] = useState(null);
   const [isTrackingLocation, setIsTrackingLocation] = useState(false);
+  const [currentSpeed, setCurrentSpeed] = useState(0); // km/h
+  const [lastLocation, setLastLocation] = useState(null);
+  const [lastLocationTime, setLastLocationTime] = useState(null);
   
   // Animasyon değerleri
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -56,12 +60,13 @@ export default function MapScreen() {
 
   useEffect(() => {
     let isMounted = true;
+    let socketCleanup = null;
     
     const initialize = async () => {
       try {
         await initializeMap();
         if (isMounted) {
-          initializeSocket();
+          socketCleanup = initializeSocket();
         }
       } catch (error) {
         console.error('Initialization error:', error);
@@ -73,6 +78,18 @@ export default function MapScreen() {
     return () => {
       isMounted = false;
       stopLocationTracking();
+      
+      // Socket cleanup
+      if (socketCleanup) {
+        socketCleanup();
+      }
+      
+      // Kullanıcı uygulamayı kapatırken konum paylaşımını durdur
+      if (isLocationSharing) {
+        console.log('🚪 App closing, stopping location sharing...');
+        stopLocationSharingOnExit();
+      }
+      
       socketService.removeAllListeners();
     };
   }, []);
@@ -83,10 +100,16 @@ export default function MapScreen() {
       console.log('MapScreen focused, reloading settings...');
       loadLocationSettings();
       loadNearbyUsers();
+      
+      // Eğer konum paylaşımı açıksa, hemen konum güncelle
+      if (isLocationSharing && location) {
+        console.log('📍 App focused, immediately sharing location...');
+        shareLocationWithServer();
+      }
     });
 
     return unsubscribe;
-  }, [navigation]);
+  }, [navigation, isLocationSharing, location, shareLocationWithServer]);
 
   // Socket.io bağlantısı kurulduğunda yakındaki kullanıcıları iste
   useEffect(() => {
@@ -95,6 +118,38 @@ export default function MapScreen() {
       socketService.requestNearbyUsers(5000, 100);
     }
   }, [isLocationSharing, socketService.isSocketConnected()]);
+
+  // AppState değişikliklerini dinle (uygulama arka plana geçtiğinde)
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState) => {
+      console.log('📱 App state changed:', nextAppState);
+      
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        // Uygulama arka plana geçtiğinde konum paylaşımını durdur
+        if (isLocationSharing) {
+          console.log('📱 App went to background, stopping location sharing...');
+          stopLocationSharingOnExit();
+        }
+      } else if (nextAppState === 'active') {
+        // Uygulama tekrar aktif olduğunda konum paylaşımını yeniden başlat
+        if (isLocationSharing) {
+          console.log('📱 App became active, restarting location sharing...');
+          // Konum paylaşımını yeniden başlat
+          setTimeout(() => {
+            if (location) {
+              shareLocationWithServer(location);
+            }
+          }, 1000);
+        }
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+
+    return () => {
+      subscription?.remove();
+    };
+  }, [isLocationSharing, location, stopLocationSharingOnExit, shareLocationWithServer]);
 
   // Animasyonları başlat
   useEffect(() => {
@@ -134,6 +189,8 @@ export default function MapScreen() {
   };
 
   const initializeSocket = () => {
+    console.log('🔌 Initializing Socket.io connection...');
+    
     // Socket event listener'larını ayarla
     socketService.onUserLocationUpdate = handleUserLocationUpdate;
     socketService.onUserJoined = handleUserJoined;
@@ -144,24 +201,122 @@ export default function MapScreen() {
 
     // Socket event listener'ları ekle - ANLIK GÜNCELLEMELER
     socketService.on('user_location_update', (data) => {
-      console.log('Real-time location update received:', data);
+      console.log('📍 Real-time location update received:', data);
       handleUserLocationUpdate(data);
     });
     
     socketService.on('nearby_users_list', (data) => {
-      console.log('Real-time nearby users list received:', data);
-      if (data.users) {
+      console.log('👥 Real-time nearby users list received:', data);
+      if (data && data.users) {
+        console.log(`👥 Setting ${data.users.length} nearby users`);
         setNearbyUsers(data.users);
+      } else {
+        console.log('👥 No users in socket response, setting empty array');
+        setNearbyUsers([]);
+      }
+    });
+
+    // Kullanıcı offline olduğunda
+    socketService.on('user_offline', (data) => {
+      console.log('👋 User went offline:', data);
+      if (data && data.userId) {
+        setNearbyUsers(prevUsers => 
+          prevUsers.filter(user => user.userId !== data.userId)
+        );
+      }
+    });
+
+    // Kullanıcı online olduğunda
+    socketService.on('user_online', (data) => {
+      console.log('👋 User came online:', data);
+      // Online olan kullanıcıyı yakındaki kullanıcılar listesine ekle
+      if (data && data.userId) {
+        // Bu kullanıcı zaten listede varsa güncelle, yoksa ekle
+        setNearbyUsers(prevUsers => {
+          const existingIndex = prevUsers.findIndex(user => user.userId === data.userId);
+          if (existingIndex >= 0) {
+            // Güncelle
+            const updatedUsers = [...prevUsers];
+            updatedUsers[existingIndex] = {
+              ...updatedUsers[existingIndex],
+              isOnline: true,
+              lastSeen: data.timestamp || new Date().toISOString()
+            };
+            return updatedUsers;
+          } else {
+            // Yeni kullanıcı ekle
+            return [...prevUsers, {
+              userId: data.userId,
+              firstName: data.firstName || 'Kullanıcı',
+              lastName: data.lastName || '',
+              isOnline: true,
+              lastSeen: data.timestamp || new Date().toISOString(),
+              location: data.location || null
+            }];
+          }
+        });
       }
     });
 
     // Socket bağlantısı kurulduğunda yakındaki kullanıcıları iste
     socketService.on('connect', () => {
-      console.log('Socket connected, requesting nearby users...');
-      if (isLocationSharing) {
-        socketService.requestNearbyUsers(5000, 100);
-      }
+      console.log('✅ Socket connected, requesting nearby users...');
+      // Bağlantı kurulduktan sonra yakındaki kullanıcıları iste
+      setTimeout(() => {
+        if (isLocationSharing) {
+          console.log('📍 Requesting nearby users via socket...');
+          socketService.requestNearbyUsers(5000, 100);
+          
+          // Socket bağlandığında hemen konum güncelle
+          if (location) {
+            console.log('📍 Socket connected, immediately sharing location...');
+            shareLocationWithServer();
+          }
+        }
+      }, 1000);
     });
+
+    // Socket bağlantı durumu kontrolü
+    socketService.on('connection_status', (data) => {
+      console.log('🔌 Socket connection status:', data);
+    });
+
+    // Socket hataları
+    socketService.on('connection_error', (error) => {
+      console.error('❌ Socket connection error:', error);
+    });
+
+    socketService.on('nearby_users_error', (error) => {
+      console.error('❌ Nearby users error:', error);
+    });
+
+    socketService.on('location_error', (error) => {
+      console.error('❌ Location error:', error);
+    });
+
+    // Socket bağlantı durumunu kontrol et
+    setTimeout(() => {
+      const isConnected = socketService.isSocketConnected();
+      console.log('🔍 Socket connection check:', isConnected);
+      if (!isConnected) {
+        console.log('⚠️ Socket not connected, retrying...');
+        socketService.connect();
+      }
+    }, 2000);
+
+    // Periyodik olarak socket bağlantısını kontrol et
+    const socketCheckInterval = setInterval(() => {
+      const isConnected = socketService.isSocketConnected();
+      if (!isConnected && isLocationSharing) {
+        console.log('🔄 Socket disconnected, attempting to reconnect...');
+        socketService.connect();
+      }
+    }, 10000); // Her 10 saniyede bir kontrol et
+
+    // Cleanup function
+    return () => {
+      clearInterval(socketCheckInterval);
+    };
   };
 
   const loadLocationSettings = async () => {
@@ -213,12 +368,19 @@ export default function MapScreen() {
       apiService.setToken(token);
       const response = await apiService.getNearbyUsers(5000, 100); // 5km yarıçap, max 100 kullanıcı
       
+      console.log('Nearby users API response:', response);
+      
       if (response.success && response.data.users) {
         console.log('Nearby users loaded:', response.data.users.length);
+        console.log('Users data:', response.data.users);
         setNearbyUsers(response.data.users);
+      } else {
+        console.log('No users found or API error:', response);
+        setNearbyUsers([]);
       }
     } catch (error) {
       console.error('Load nearby users error:', error);
+      setNearbyUsers([]);
     }
   };
 
@@ -275,9 +437,17 @@ export default function MapScreen() {
         try {
           const location = await Location.getCurrentPositionAsync({
             accuracy: Location.Accuracy.Highest,
-            maximumAge: 2000,
-            timeout: 3000,
+            maximumAge: 1000, // 1 saniye - daha güncel veri
+            timeout: 2000,    // 2 saniye timeout
           });
+          
+          // Hız hesapla
+          const speed = calculateSpeed(location.coords);
+          setCurrentSpeed(speed);
+          
+          // Önceki konum bilgilerini güncelle
+          setLastLocation(location);
+          setLastLocationTime(new Date().getTime());
           
           // State güncellemelerini batch'le
           setLocation(location.coords);
@@ -293,7 +463,7 @@ export default function MapScreen() {
           }
         }
       }
-    }, 2000); // 2 saniyede bir güncelle
+        }, 1000); // 1 saniyede bir güncelle - normal hız
   }, [isLocationSharing, locationPermission, isTrackingLocation, shareLocationWithServer]);
 
   const stopLocationTracking = useCallback(() => {
@@ -304,8 +474,53 @@ export default function MapScreen() {
     setIsTrackingLocation(false);
   }, []);
 
+  // Uygulama kapanırken konum paylaşımını durdur
+  const stopLocationSharingOnExit = useCallback(async () => {
+    try {
+      console.log('🚪 Stopping location sharing on app exit...');
+      
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        console.log('No token available for stopping location sharing');
+        return;
+      }
+
+      apiService.setToken(token);
+      
+      // Önce kullanıcı profilini al (userId için)
+      const profileResponse = await apiService.getProfile();
+      const userId = profileResponse.data?.id;
+      
+      if (userId) {
+        // Backend'e kullanıcıyı offline olarak işaretle
+        await apiService.setUserOffline(userId);
+        
+        // Socket ile diğer kullanıcılara offline olduğunu bildir
+        if (socketService.isSocketConnected()) {
+          socketService.emit('user_offline', {
+            userId: userId,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } else {
+        // Fallback: sadece konum paylaşımını durdur
+        await apiService.stopLocationSharing();
+      }
+      
+      console.log('✅ Location sharing stopped successfully');
+    } catch (error) {
+      console.error('❌ Error stopping location sharing on exit:', error);
+    }
+  }, []);
+
   const shareLocationWithServer = useCallback(async (coords) => {
     try {
+      // Konum verisi kontrolü
+      if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+        console.warn('Invalid location data:', coords);
+        return;
+      }
+
       const token = await apiService.getStoredToken();
       if (!token) {
         console.warn('No auth token available for location sharing');
@@ -318,7 +533,7 @@ export default function MapScreen() {
       const response = await apiService.updateUserLocation({
         latitude: coords.latitude,
         longitude: coords.longitude,
-        accuracy: coords.accuracy,
+        accuracy: coords.accuracy || 0,
         timestamp: new Date().toISOString()
       });
 
@@ -409,7 +624,7 @@ export default function MapScreen() {
 
 
   const centerOnUserLocation = useCallback(() => {
-    if (location && mapRef.current) {
+    if (location && location.latitude && location.longitude && mapRef.current) {
       try {
         mapRef.current.animateToRegion({
           latitude: location.latitude,
@@ -433,7 +648,8 @@ export default function MapScreen() {
       return;
     }
 
-    console.log('User location update received:', data);
+    console.log('📍 User location update received:', data);
+    console.log('📍 Current location state:', location);
 
     setNearbyUsers(prevUsers => {
       const existingUserIndex = prevUsers.findIndex(user => user.userId === data.userId);
@@ -441,24 +657,103 @@ export default function MapScreen() {
       if (existingUserIndex >= 0) {
         // Kullanıcıyı güncelle
         const updatedUsers = [...prevUsers];
+        const existingUser = updatedUsers[existingUserIndex];
+        
+        // Mesafe hesapla (eğer kendi konumumuz varsa)
+        let newDistance = existingUser.distance || 0;
+        if (location && location.latitude && location.longitude && data.location && data.location.latitude && data.location.longitude) {
+          newDistance = calculateDistance(
+            location.latitude, location.longitude,
+            parseFloat(data.location.latitude), parseFloat(data.location.longitude)
+          );
+          console.log(`📍 Updated distance for user ${data.userId}: ${Math.round(newDistance)}m`);
+          console.log(`📍 My location: ${location.latitude}, ${location.longitude}`);
+          console.log(`📍 Their location: ${data.location.latitude}, ${data.location.longitude}`);
+        }
+        
         updatedUsers[existingUserIndex] = {
-          ...updatedUsers[existingUserIndex],
+          ...existingUser,
           location: data.location,
           lastSeen: data.timestamp,
-          isOnline: true
+          isOnline: true,
+          distance: newDistance,
+          firstName: data.firstName || existingUser.firstName,
+          lastName: data.lastName || existingUser.lastName
         };
         return updatedUsers;
       } else {
         // Yeni kullanıcı ekle
+        let newDistance = 0;
+        if (location && location.latitude && location.longitude && data.location && data.location.latitude && data.location.longitude) {
+          newDistance = calculateDistance(
+            location.latitude, location.longitude,
+            parseFloat(data.location.latitude), parseFloat(data.location.longitude)
+          );
+          console.log(`📍 New user ${data.userId} distance: ${Math.round(newDistance)}m`);
+        }
+        
         return [...prevUsers, {
           userId: data.userId,
+          firstName: data.firstName || 'Kullanıcı',
+          lastName: data.lastName || '',
           location: data.location,
           lastSeen: data.timestamp,
-          isOnline: true
+          isOnline: true,
+          distance: newDistance
         }];
       }
     });
-  }, []);
+  }, [location]);
+
+  // Mesafe hesaplama fonksiyonu
+  const calculateDistance = (lat1, lng1, lat2, lng2) => {
+    const R = 6371000; // Dünya'nın yarıçapı (metre)
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const distance = R * c;
+    
+    // GPS hatası düzeltmesi: Eğer mesafe 50 metreden azsa, çok daha az göster
+    if (distance < 50) {
+      return Math.max(distance * 0.2, 1); // GPS hatasını büyük oranda düzelt, minimum 1m
+    }
+    
+    return distance;
+  };
+
+  // Hız hesaplama fonksiyonu
+  const calculateSpeed = (newLocation) => {
+    if (!newLocation || !lastLocation || !lastLocationTime) {
+      return 0;
+    }
+
+    const now = new Date().getTime();
+    const timeDiff = (now - lastLocationTime) / 1000; // saniye cinsinden
+
+    if (timeDiff < 1) {
+      return currentSpeed; // Çok hızlı güncelleme, önceki hızı koru
+    }
+
+    const distance = calculateDistance(
+      lastLocation.latitude,
+      lastLocation.longitude,
+      newLocation.latitude,
+      newLocation.longitude
+    );
+
+    if (distance < 1) {
+      return 0; // Çok küçük mesafe, hız 0
+    }
+
+    const speedMs = distance / timeDiff; // m/s
+    const speedKmh = speedMs * 3.6; // km/h
+
+    // Maksimum hız sınırı (300 km/h)
+    return Math.min(speedKmh, 300);
+  };
 
   const handleUserJoined = (data) => {
     console.log('User joined:', data);
@@ -562,7 +857,7 @@ export default function MapScreen() {
               }}
             >
               {/* Kullanıcının kendi konumu */}
-              {location && (
+              {location && location.latitude && location.longitude && (
                 <Marker
                   coordinate={{
                     latitude: location.latitude,
@@ -586,6 +881,15 @@ export default function MapScreen() {
                   return null;
                 }
                 
+                console.log(`📍 User ${index} data:`, {
+                  userId: user.userId,
+                  firstName: user.firstName,
+                  first_name: user.first_name,
+                  lastName: user.lastName,
+                  last_name: user.last_name,
+                  location: user.location
+                });
+                
                 return (
                   <Marker
                     key={user.userId}
@@ -593,8 +897,8 @@ export default function MapScreen() {
                       latitude: user.location.latitude,
                       longitude: user.location.longitude,
                     }}
-                    title={`Kullanıcı ${index + 1}`}
-                    description={`Son görülme: ${new Date(user.lastSeen).toLocaleTimeString()}`}
+                    title={`${user.firstName || user.first_name || `Kullanıcı ${index + 1}`} ${user.lastName || user.last_name || ''}`}
+                    description={`${user.distance ? `${Math.round(user.distance)}m uzaklıkta` : 'Yakında'} • ${user.isOnline ? 'Çevrimiçi' : `Son görülme: ${new Date(user.lastSeen).toLocaleTimeString()}`}`}
                     pinColor={colors.secondary}
                   >
                     <View style={styles.otherUserMarker}>
@@ -605,7 +909,7 @@ export default function MapScreen() {
               })}
 
               {/* Kullanıcının konum doğruluğu için daire */}
-              {location && locationAccuracy && (
+              {location && location.latitude && location.longitude && locationAccuracy && (
                 <Circle
                   center={{
                     latitude: location.latitude,
@@ -628,7 +932,7 @@ export default function MapScreen() {
                   {Platform.OS === 'ios' ? 'iOS için harita yükleniyor...' : 'Android için harita özelliği yakında gelecek'}
                 </Text>
                 <Text style={styles.placeholderInfo}>
-                  Konumunuz: {location ? `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}` : 'Alınıyor...'}
+                  Konumunuz: {location && location.latitude && location.longitude ? `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}` : 'Alınıyor...'}
                 </Text>
                 <Text style={styles.placeholderInfo}>
                   Yakındaki kullanıcılar: {nearbyUsers.length}
@@ -649,6 +953,23 @@ export default function MapScreen() {
               </View>
             </View>
           )}
+        </View>
+
+        {/* Hız Göstergesi - Sol Üst */}
+        <View style={styles.speedIndicator}>
+          <View style={styles.speedContainer}>
+            <Text style={styles.speedValue}>{Math.round(currentSpeed)}</Text>
+            <Text style={styles.speedUnit}>km/h</Text>
+          </View>
+          <View style={styles.speedStatus}>
+            <View style={[
+              styles.speedDot,
+              { backgroundColor: currentSpeed > 5 ? colors.success : colors.warning }
+            ]} />
+            <Text style={styles.speedStatusText}>
+              {currentSpeed > 5 ? 'Hareket Halinde' : 'Durmakta'}
+            </Text>
+          </View>
         </View>
 
         {/* Kontrol Butonları */}
@@ -688,7 +1009,27 @@ export default function MapScreen() {
               styles.controlButton,
               showUserList && styles.controlButtonActive
             ]}
-            onPress={() => setShowUserList(!showUserList)}
+            onPress={() => {
+              const newShowUserList = !showUserList;
+              setShowUserList(newShowUserList);
+              
+              // Eğer liste açılıyorsa ve socket bağlıysa yakındaki kullanıcıları iste
+              if (newShowUserList && socketService.isSocketConnected()) {
+                console.log('📍 User list opened, requesting nearby users...');
+                console.log('📍 Socket connected:', socketService.isSocketConnected());
+                socketService.requestNearbyUsers(5000, 100);
+              } else if (newShowUserList && !socketService.isSocketConnected()) {
+                console.log('⚠️ Socket not connected, trying to connect...');
+                socketService.connect();
+                // Bağlantı kurulduktan sonra yakındaki kullanıcıları iste
+                setTimeout(() => {
+                  if (socketService.isSocketConnected()) {
+                    console.log('📍 Socket connected, requesting nearby users...');
+                    socketService.requestNearbyUsers(5000, 100);
+                  }
+                }, 2000);
+              }
+            }}
           >
             <Ionicons name="people" size={isTablet ? 28 : 24} color={showUserList ? '#FFFFFF' : colors.primary} />
             {nearbyUsers.length > 0 && (
@@ -710,10 +1051,7 @@ export default function MapScreen() {
               }
             ]}
           >
-            <LinearGradient
-              colors={['rgba(255, 255, 255, 0.95)', 'rgba(255, 255, 255, 0.9)']}
-              style={styles.userListContent}
-            >
+            <View style={styles.userListContent}>
               <View style={styles.userListHeader}>
                 <Text style={styles.userListTitle}>Yakındaki Kullanıcılar</Text>
                 <TouchableOpacity onPress={() => setShowUserList(false)}>
@@ -723,14 +1061,19 @@ export default function MapScreen() {
               
               {nearbyUsers.length > 0 ? (
                 nearbyUsers.map((user, index) => (
-                  <View key={user.userId} style={styles.userItem}>
-                      <View style={styles.userAvatar}>
-                        <Ionicons name="person" size={isTablet ? 24 : 20} color="#FFFFFF" />
-                      </View>
+                  <View key={user.userId || index} style={styles.userItem}>
+                    <View style={styles.userAvatar}>
+                      <Ionicons name="person" size={isTablet ? 24 : 20} color="#FFFFFF" />
+                    </View>
                     <View style={styles.userInfo}>
-                      <Text style={styles.userName}>Kullanıcı {index + 1}</Text>
+                      <Text style={styles.userName}>
+                        {user.firstName || user.first_name || `Kullanıcı ${index + 1}`} {user.lastName || user.last_name || ''}
+                      </Text>
                       <Text style={styles.userLastSeen}>
-                        Son görülme: {new Date(user.lastSeen).toLocaleTimeString()}
+                        {user.distance ? `${Math.round(user.distance)}m uzaklıkta` : 'Yakında'}
+                      </Text>
+                      <Text style={styles.userLastSeen}>
+                        {user.isOnline ? 'Çevrimiçi' : `Son görülme: ${user.lastSeen ? new Date(user.lastSeen).toLocaleTimeString() : 'Bilinmiyor'}`}
                       </Text>
                     </View>
                     <View style={styles.userStatus}>
@@ -739,9 +1082,21 @@ export default function MapScreen() {
                   </View>
                 ))
               ) : (
+              <View style={styles.noUsersContainer}>
+                <Ionicons name="people-outline" size={48} color={colors.text.tertiary} />
                 <Text style={styles.noUsersText}>Yakında kullanıcı bulunmuyor</Text>
+                <Text style={styles.noUsersSubtext}>
+                  Konum paylaşımı: {isLocationSharing ? 'Açık' : 'Kapalı'}
+                </Text>
+                <Text style={styles.noUsersSubtext}>
+                  Socket: {socketService.isSocketConnected() ? 'Bağlı' : 'Bağlı değil'}
+                </Text>
+                <Text style={styles.noUsersSubtext}>
+                  Debug: {nearbyUsers.length} kullanıcı bulundu
+                </Text>
+              </View>
               )}
-            </LinearGradient>
+            </View>
           </Animated.View>
         )}
 
@@ -861,6 +1216,58 @@ const styles = StyleSheet.create({
     height: scale(isTablet ? 10 : 8),
     borderRadius: scale(isTablet ? 5 : 4),
   },
+  speedIndicator: {
+    position: 'absolute',
+    left: scale(isTablet ? 24 : 16),
+    top: Platform.OS === 'ios' ? 44 + verticalScale(isTablet ? 90 : 70) : (StatusBar.currentHeight || 24) + verticalScale(isTablet ? 90 : 70),
+    zIndex: 1000,
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: scale(isTablet ? 16 : 12),
+    padding: scale(isTablet ? 16 : 12),
+    shadowColor: colors.shadow.dark,
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: colors.border.light,
+    minWidth: scale(isTablet ? 120 : 100),
+  },
+  speedContainer: {
+    alignItems: 'center',
+    marginBottom: verticalScale(isTablet ? 8 : 6),
+  },
+  speedValue: {
+    fontSize: scaleFont(isTablet ? 32 : 24),
+    fontWeight: '700',
+    color: colors.primary,
+    lineHeight: scaleFont(isTablet ? 36 : 28),
+  },
+  speedUnit: {
+    fontSize: scaleFont(isTablet ? 14 : 12),
+    fontWeight: '500',
+    color: colors.text.secondary,
+    marginTop: verticalScale(isTablet ? -4 : -2),
+  },
+  speedStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  speedDot: {
+    width: scale(isTablet ? 8 : 6),
+    height: scale(isTablet ? 8 : 6),
+    borderRadius: scale(isTablet ? 4 : 3),
+    marginRight: scale(isTablet ? 6 : 4),
+  },
+  speedStatusText: {
+    fontSize: scaleFont(isTablet ? 12 : 10),
+    fontWeight: '500',
+    color: colors.text.secondary,
+  },
   controlButtons: {
     position: 'absolute',
     right: scale(isTablet ? 24 : 16),
@@ -912,16 +1319,19 @@ const styles = StyleSheet.create({
     zIndex: 1000,
   },
   userListContent: {
+    backgroundColor: colors.surface,
     borderRadius: scale(isTablet ? 20 : 15),
     padding: scale(isTablet ? 20 : 15),
     shadowColor: colors.shadow.dark,
     shadowOffset: {
       width: 0,
-      height: 2,
+      height: 4,
     },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: colors.border.light,
   },
   userListHeader: {
     flexDirection: 'row',
@@ -971,11 +1381,23 @@ const styles = StyleSheet.create({
     height: scale(isTablet ? 16 : 12),
     borderRadius: scale(isTablet ? 8 : 6),
   },
+  noUsersContainer: {
+    alignItems: 'center',
+    paddingVertical: verticalScale(isTablet ? 30 : 20),
+  },
   noUsersText: {
-    fontSize: scaleFont(isTablet ? 20 : 16),
+    fontSize: scaleFont(isTablet ? 18 : 16),
+    color: colors.text.primary,
+    textAlign: 'center',
+    marginTop: verticalScale(10),
+    fontWeight: '600',
+  },
+  noUsersSubtext: {
+    fontSize: scaleFont(isTablet ? 14 : 12),
     color: colors.text.secondary,
     textAlign: 'center',
-    paddingVertical: verticalScale(isTablet ? 30 : 20),
+    marginTop: verticalScale(5),
+    lineHeight: scaleFont(18),
   },
   userMarker: {
     width: scale(isTablet ? 50 : 40),

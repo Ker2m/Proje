@@ -79,8 +79,21 @@ const register = async (req, res) => {
           expires_at
         });
 
-        // Email gönderme işlemi burada yapılacak
-        console.log(`📧 Doğrulama kodu: ${verification_code}`);
+        // Email gönderme işlemi
+        const emailService = require('../services/emailService');
+        const userName = `${first_name} ${last_name}`;
+        
+        if (emailService.isConfigured) {
+          try {
+            await emailService.sendVerificationCode(email, verification_code, userName);
+            console.log(`📧 Doğrulama kodu email ile gönderildi: ${email}`);
+          } catch (emailError) {
+            console.error('Email gönderme hatası:', emailError);
+            console.log(`📧 Doğrulama kodu (email hatası): ${verification_code}`);
+          }
+        } else {
+          console.log(`📧 Doğrulama kodu (email servisi yapılandırılmamış): ${verification_code}`);
+        }
       } catch (error) {
         console.error('Email doğrulama kodu oluşturma hatası:', error);
         // Hata olsa bile kullanıcı oluşturma işlemini devam ettir

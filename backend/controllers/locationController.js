@@ -128,13 +128,22 @@ const getNearbyUsers = async (req, res) => {
                 Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
                 Math.sin(dLng/2) * Math.sin(dLng/2);
       const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-      return R * c;
+      const distance = R * c;
+      
+      // GPS hatası düzeltmesi: Eğer mesafe 50 metreden azsa, çok daha az göster
+      if (distance < 50) {
+        return Math.max(distance * 0.2, 1); // GPS hatasını büyük oranda düzelt, minimum 1m
+      }
+      
+      return distance;
     };
 
     // Tüm kullanıcıları al (konum paylaşımı açık olanlar)
-    // Son 5 dakika içinde güncellenmiş kullanıcıları al
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-    const allUsers = await User.findUsersWithLocationSharing(fiveMinutesAgo);
+    // Zaman filtresi kaldırıldı - tüm aktif kullanıcıları al
+    const allUsers = await User.findUsersWithLocationSharing();
+    
+    console.log(`📍 API: Found ${allUsers.length} users with location sharing enabled`);
+    console.log(`📍 API: Current user (${req.user.email}) location: ${userLat}, ${userLng}`);
 
     // Yakındaki kullanıcıları filtrele
     const nearbyUsers = allUsers
@@ -144,6 +153,11 @@ const getNearbyUsers = async (req, res) => {
           userLat, userLng,
           user.location_latitude, user.location_longitude
         );
+        // Online kullanıcı kontrolü (basit versiyon - API'de onlineUsers map'i yok)
+        const now = new Date();
+        const lastUpdate = new Date(user.location_last_updated);
+        const isOnline = (now - lastUpdate) < 30 * 1000; // 30 saniye içinde güncellenmişse online
+        
         return {
           userId: user.id,
           firstName: user.first_name,
@@ -155,7 +169,8 @@ const getNearbyUsers = async (req, res) => {
             accuracy: user.location_accuracy
           },
           lastSeen: user.location_last_updated,
-          distance: Math.round(distance)
+          distance: Math.round(distance),
+          isOnline: isOnline
         };
       })
       .filter(user => user.distance <= searchRadius)
@@ -225,35 +240,64 @@ const getLocationHistory = async (req, res) => {
   }
 };
 
-// Konum paylaşımını durdur
-const stopLocationSharing = async (req, res) => {
-  try {
-    const userId = req.user.id;
+  // Konum paylaşımını durdur
+  const stopLocationSharing = async (req, res) => {
+    try {
+      const userId = req.user.id;
 
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'Kullanıcı bulunamadı'
+        });
+      }
+
+      // Konum paylaşımını kapat
+      await User.stopLocationSharing(userId);
+
+      res.json({
+        success: true,
+        message: 'Konum paylaşımı durduruldu'
+      });
+
+    } catch (error) {
+      console.error('Stop location sharing error:', error);
+      res.status(500).json({
         success: false,
-        message: 'Kullanıcı bulunamadı'
+        message: 'Konum paylaşımı durdurulurken bir hata oluştu'
       });
     }
+  };
 
-    // Konum paylaşımını kapat
-    await User.stopLocationSharing(userId);
+  // Kullanıcı offline olduğunda konum paylaşımını durdur (socket.io için)
+  const setUserOffline = async (req, res) => {
+    try {
+      const { userId } = req.body;
 
-    res.json({
-      success: true,
-      message: 'Konum paylaşımı durduruldu'
-    });
+      if (!userId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Kullanıcı ID gerekli'
+        });
+      }
 
-  } catch (error) {
-    console.error('Stop location sharing error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Konum paylaşımı durdurulurken bir hata oluştu'
-    });
-  }
-};
+      // Konum paylaşımını kapat
+      await User.stopLocationSharing(userId);
+
+      res.json({
+        success: true,
+        message: 'Kullanıcı offline olarak işaretlendi'
+      });
+
+    } catch (error) {
+      console.error('Set user offline error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Kullanıcı offline işaretlenirken bir hata oluştu'
+      });
+    }
+  };
 
 // Konum ayarlarını getir
 const getLocationSettings = async (req, res) => {
@@ -356,6 +400,7 @@ module.exports = {
   getNearbyUsers,
   getLocationHistory,
   stopLocationSharing,
+  setUserOffline,
   getLocationSettings,
   updateLocationSettings
 };

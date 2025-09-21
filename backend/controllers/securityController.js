@@ -145,7 +145,16 @@ class SecurityController {
 
       // Email gönder
       const userName = `${req.user.first_name} ${req.user.last_name}`;
-      await emailService.sendVerificationCode(userEmail, verificationCode, userName);
+      
+      // Email servisinin yapılandırılıp yapılandırılmadığını kontrol et
+      if (!emailService.isConfigured) {
+        console.log('⚠️ Email servisi yapılandırılmamış, doğrulama kodu konsola yazdırılıyor');
+        console.log(`📧 Email Doğrulama Kodu: ${verificationCode}`);
+        console.log(`📧 Email: ${userEmail}`);
+        console.log(`📧 Kullanıcı: ${userName}`);
+      } else {
+        await emailService.sendVerificationCode(userEmail, verificationCode, userName);
+      }
 
       res.json({
         success: true,
@@ -176,7 +185,7 @@ class SecurityController {
 
       // Kodu veritabanından kontrol et
       const codeResult = await pool.query(
-        'SELECT * FROM email_verifications WHERE user_id = $1 AND verification_code = $2 AND code_type = $3 AND expires_at > NOW() AND used = false ORDER BY created_at DESC LIMIT 1',
+        'SELECT * FROM email_verifications WHERE user_id = $1 AND verification_code = $2 AND code_type = $3 AND expires_at > NOW() AND is_used = false ORDER BY created_at DESC LIMIT 1',
         [userId, code, 'email_verification']
       );
 
@@ -189,7 +198,7 @@ class SecurityController {
 
       // Kodu kullanılmış olarak işaretle
       await pool.query(
-        'UPDATE email_verifications SET used = true WHERE id = $1',
+        'UPDATE email_verifications SET is_used = true WHERE id = $1',
         [codeResult.rows[0].id]
       );
 
@@ -259,7 +268,16 @@ class SecurityController {
 
       // Email gönder
       const userName = `${firstName} ${lastName}`;
-      await emailService.sendVerificationCode(email, verificationCode, userName);
+      
+      // Email servisinin yapılandırılıp yapılandırılmadığını kontrol et
+      if (!emailService.isConfigured) {
+        console.log('⚠️ Email servisi yapılandırılmamış, doğrulama kodu konsola yazdırılıyor');
+        console.log(`📧 2FA Doğrulama Kodu: ${verificationCode}`);
+        console.log(`📧 Email: ${email}`);
+        console.log(`📧 Kullanıcı: ${userName}`);
+      } else {
+        await emailService.sendVerificationCode(email, verificationCode, userName);
+      }
 
       res.json({
         success: true,
@@ -289,7 +307,7 @@ class SecurityController {
 
       // Kodu veritabanından kontrol et
       const codeResult = await pool.query(
-        'SELECT * FROM email_verifications WHERE email = $1 AND verification_code = $2 AND code_type = $3 AND expires_at > NOW() AND used = false ORDER BY created_at DESC LIMIT 1',
+        'SELECT * FROM email_verifications WHERE email = $1 AND verification_code = $2 AND code_type = $3 AND expires_at > NOW() AND is_used = false ORDER BY created_at DESC LIMIT 1',
         [email, code, 'registration_2fa']
       );
 
@@ -302,7 +320,7 @@ class SecurityController {
 
       // Kodu kullanılmış olarak işaretle
       await pool.query(
-        'UPDATE email_verifications SET used = true WHERE id = $1',
+        'UPDATE email_verifications SET is_used = true WHERE id = $1',
         [codeResult.rows[0].id]
       );
 

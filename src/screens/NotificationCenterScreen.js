@@ -73,6 +73,16 @@ export default function NotificationCenterScreen({ navigation }) {
 
   const loadNotifications = async (pageNum = 1, isRefresh = false) => {
     try {
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        console.log('Token bulunamadı, bildirimler yüklenemiyor');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
       if (isRefresh) {
         setRefreshing(true);
       } else if (pageNum === 1) {
@@ -108,6 +118,16 @@ export default function NotificationCenterScreen({ navigation }) {
 
   const loadStats = async () => {
     try {
+      // Token'ı kontrol et
+      const token = await apiService.getStoredToken();
+      if (!token) {
+        console.log('Token bulunamadı, istatistikler yüklenemiyor');
+        return;
+      }
+      
+      // Token'ı API servisine set et
+      apiService.setToken(token);
+      
       const response = await apiService.getNotificationStats();
       if (response.success) {
         setStats(response.data);

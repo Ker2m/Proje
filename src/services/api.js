@@ -1,15 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 
 // API Base URL
 // Environment'a göre URL seçimi
 const getApiBaseUrl = () => {
   // Development için
   if (__DEV__) {
-    // Mobil uygulama için IP adresi kullan (localhost çalışmaz)
-    // Bu IP'yi kendi bilgisayarınızın IP adresi ile değiştirin
-    // Windows: ipconfig komutu ile IP adresinizi bulabilirsiniz
-    // Mac/Linux: ifconfig komutu ile IP adresinizi bulabilirsiniz
-    return 'http://192.168.1.2:3001/api'; // Bilgisayarınızın IP adresi
+    // Telefon/emülatör için gerçek IP adresini kullan
+    console.log('Development mode - using network IP API');
+    return 'http://192.168.1.2:3000/api';
   }
   // Production için
   return 'https://your-production-api.com/api';
@@ -22,6 +21,7 @@ class ApiService {
   constructor() {
     this.baseURL = API_BASE_URL;
     this.token = null;
+    console.log('API Service initialized with URL:', this.baseURL);
   }
 
   // Token'ı ayarla
@@ -74,11 +74,20 @@ class ApiService {
   async request(endpoint, options = {}) {
     const url = `${this.baseURL}${endpoint}`;
     
+    // Token'ı otomatik olarak kontrol et ve set et
+    if (!this.token) {
+      const storedToken = await this.getStoredToken();
+      if (storedToken) {
+        this.token = storedToken;
+      }
+    }
+    
     const config = {
       headers: {
         'Content-Type': 'application/json',
         ...options.headers,
       },
+      timeout: 30000, // 30 saniye timeout
       ...options,
     };
 
@@ -106,10 +115,12 @@ class ApiService {
       return data;
     } catch (error) {
       console.error('API Error:', error);
+      console.error('API URL:', url);
+      console.error('Request config:', config);
       
       // Network hatası için özel mesaj
-      if (error.message === 'Network request failed') {
-        throw new Error('Sunucuya bağlanılamıyor. Lütfen internet bağlantınızı kontrol edin ve API sunucusunun çalıştığından emin olun.');
+      if (error.message === 'Network request failed' || error.message.includes('Network request timed out')) {
+        throw new Error(`Sunucuya bağlanılamıyor. API URL: ${url}. Lütfen internet bağlantınızı kontrol edin ve API sunucusunun çalıştığından emin olun.`);
       }
       
       throw error;
@@ -313,7 +324,7 @@ class ApiService {
 
   // Arkadaş ekle
   async addFriend(friendId) {
-    return this.post('/users/friends', { friend_id: friendId });
+    return this.post('/friendships', { friendId });
   }
 
   // Arkadaş çıkar
@@ -389,6 +400,10 @@ class ApiService {
 
   async stopLocationSharing() {
     return this.post('/location/stop');
+  }
+
+  async setUserOffline(userId) {
+    return this.post('/location/offline', { userId });
   }
 
   async getLocationSettings() {
@@ -470,8 +485,58 @@ class ApiService {
     return this.put('/users/advanced-profile', profileData);
   }
 
-  async getNearbyUsers(latitude, longitude, radius = 5000, limit = 50) {
-    return this.get(`/users/nearby?latitude=${latitude}&longitude=${longitude}&radius=${radius}&limit=${limit}`);
+
+  // Social API'leri
+  async recordProfileVisit(profileId) {
+    return this.post(`/social/visit/${profileId}`);
+  }
+
+  async getProfileVisitStats() {
+    return this.get('/social/visit-stats');
+  }
+
+  async getRecentVisitors(limit = 10) {
+    return this.get(`/social/recent-visitors?limit=${limit}`);
+  }
+
+  async followUser(userId) {
+    return this.post(`/social/follow/${userId}`);
+  }
+
+  async unfollowUser(userId) {
+    return this.delete(`/social/follow/${userId}`);
+  }
+
+  async getFollowers(limit = 20, offset = 0) {
+    return this.get(`/social/followers?limit=${limit}&offset=${offset}`);
+  }
+
+  async getFollowing(limit = 20, offset = 0) {
+    return this.get(`/social/following?limit=${limit}&offset=${offset}`);
+  }
+
+  async getFollowStats() {
+    return this.get('/social/follow-stats');
+  }
+
+  async getFriendsList(limit = 50, offset = 0) {
+    return this.get(`/social/friends?limit=${limit}&offset=${offset}`);
+  }
+
+  // Özel mesaj fonksiyonları
+  async sendPrivateMessage(message, friendId) {
+    return this.post('/chat/private/send', {
+      message: message,
+      friendId: friendId
+    });
+  }
+
+  async getPrivateMessageHistory(friendId, limit = 50, offset = 0) {
+    return this.get(`/chat/private/history?friendId=${friendId}&limit=${limit}&offset=${offset}`);
+  }
+
+  async getPrivateConversations(limit = 20, offset = 0) {
+    return this.get(`/chat/private/conversations?limit=${limit}&offset=${offset}`);
   }
 
 }

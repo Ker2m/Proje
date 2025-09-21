@@ -7,6 +7,7 @@ const {
   getNearbyUsers,
   getLocationHistory,
   stopLocationSharing,
+  setUserOffline,
   getLocationSettings,
   updateLocationSettings
 } = require('../controllers/locationController');
@@ -60,6 +61,11 @@ router.get('/history', authenticateToken, getLocationHistory);
 // @desc    Konum paylaşımını durdur
 // @access  Private
 router.post('/stop', authenticateToken, stopLocationSharing);
+
+// @route   POST /api/location/offline
+// @desc    Kullanıcıyı offline olarak işaretle
+// @access  Public (socket.io için)
+router.post('/offline', setUserOffline);
 
 // @route   GET /api/location/settings
 // @desc    Konum ayarlarını getir

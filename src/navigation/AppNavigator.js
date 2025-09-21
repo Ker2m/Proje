@@ -16,6 +16,8 @@ import RegisterScreen from '../screens/RegisterScreen';
 import EmailVerificationScreen from '../screens/EmailVerificationScreen';
 import MapScreen from '../screens/MapScreen';
 import ChatScreen from '../screens/ChatScreen';
+import LocalChatScreen from '../screens/LocalChatScreen';
+import PrivateChatScreen from '../screens/PrivateChatScreen';
 import PhotoScreen from '../screens/PhotoScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import SettingsScreen from '../screens/SettingsScreen';
@@ -235,6 +237,12 @@ export default function AppNavigator() {
           </Stack.Screen>
           <Stack.Screen name="NotificationCenter">
             {(props) => <NotificationCenterScreen {...props} />}
+          </Stack.Screen>
+          <Stack.Screen name="LocalChat">
+            {(props) => <LocalChatScreen {...props} />}
+          </Stack.Screen>
+          <Stack.Screen name="PrivateChat">
+            {(props) => <PrivateChatScreen {...props} />}
           </Stack.Screen>
         </>
       ) : (

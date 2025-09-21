@@ -23,6 +23,7 @@ const getFriends = async (req, res) => {
         u.last_name,
         u.email,
         u.profile_picture,
+        u.birth_date,
         u.is_active,
         f.status,
         f.created_at as friendship_created_at,
@@ -42,17 +43,32 @@ const getFriends = async (req, res) => {
     
     const result = await pool.query(query, [userId]);
     
-    const friends = result.rows.map(friend => ({
-      id: friend.id,
-      firstName: friend.first_name,
-      lastName: friend.last_name,
-      email: friend.email,
-      profilePicture: friend.profile_picture,
-      isActive: friend.is_active,
-      status: friend.status,
-      friendshipCreatedAt: friend.friendship_created_at,
-      friendshipUpdatedAt: friend.friendship_updated_at
-    }));
+    const friends = result.rows.map(friend => {
+      // Yaş hesaplama
+      let age = null;
+      if (friend.birth_date) {
+        const today = new Date();
+        const birthDate = new Date(friend.birth_date);
+        age = today.getFullYear() - birthDate.getFullYear();
+        const monthDiff = today.getMonth() - birthDate.getMonth();
+        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+          age--;
+        }
+      }
+
+      return {
+        id: friend.id,
+        firstName: friend.first_name,
+        lastName: friend.last_name,
+        email: friend.email,
+        profilePicture: friend.profile_picture,
+        age: age,
+        isActive: friend.is_active,
+        status: friend.status,
+        friendshipCreatedAt: friend.friendship_created_at,
+        friendshipUpdatedAt: friend.friendship_updated_at
+      };
+    });
     
     res.json({
       success: true,

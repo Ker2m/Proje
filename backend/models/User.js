@@ -228,10 +228,15 @@ class User {
     
     query += ` ORDER BY location_last_updated DESC LIMIT 100`;
     
+    console.log('📍 User.findUsersWithLocationSharing query:', query);
+    console.log('📍 User.findUsersWithLocationSharing params:', params);
+    
     try {
       const result = await pool.query(query, params);
+      console.log(`📍 User.findUsersWithLocationSharing found ${result.rows.length} users`);
       return result.rows;
     } catch (error) {
+      console.error('📍 User.findUsersWithLocationSharing error:', error);
       throw error;
     }
   }

@@ -113,9 +113,22 @@ const verifyCode = async (req, res) => {
     // Kodu kullanılmış olarak işaretle
     await EmailVerification.markAsUsed(verification.id);
 
-    // Kullanıcı kayıt işlemi ise email_verified'i true yap
-    if (code_type === 'registration' && verification.user_id) {
-      await User.update(verification.user_id, { email_verified: true });
+    // Email doğrulama işlemi ise email_verified'i true yap
+    if (code_type === 'registration' || code_type === 'email_verification') {
+      if (verification.user_id) {
+        // Kullanıcı zaten oluşturulmuş, sadece email_verified'i güncelle
+        await User.update(verification.user_id, { email_verified: true });
+        console.log(`✅ Email doğrulandı (${code_type}) - Kullanıcı ID: ${verification.user_id}`);
+      } else {
+        // Kullanıcı henüz oluşturulmamış, email ile kullanıcıyı bul ve güncelle
+        const user = await User.findByEmail(verification.email);
+        if (user) {
+          await User.update(user.id, { email_verified: true });
+          console.log(`✅ Email doğrulandı (${code_type}) - Kullanıcı ID: ${user.id}`);
+        } else {
+          console.log(`⚠️ Email doğrulandı ama kullanıcı bulunamadı: ${verification.email}`);
+        }
+      }
     }
 
     res.json({
